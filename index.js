@@ -8,6 +8,8 @@
     'use strict';
 
     const MODULE = 'st_api_switcher';
+    const EXT_NAME = 'st-api-switcher';
+    const VERSION = '1.2.0';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
     function getCtx() {
@@ -76,6 +78,72 @@
             }
         }
 
+        /* ---------------- 更新检查（一键更新） ---------------- */
+        let updGlobal = false;
+        let updState = 'idle';
+
+        function setUpdateState(s) {
+            updState = s;
+            const btn = $('#aqs_update_btn');
+            if (!btn.length) return;
+            const map = {
+                idle: '<i class="fa-solid fa-satellite-dish"></i> 检查更新',
+                checking: '<i class="fa-solid fa-circle-notch fa-spin"></i> 检测中',
+                latest: '<i class="fa-solid fa-circle-check"></i> 已最新',
+                available: '<i class="fa-solid fa-cloud-arrow-down"></i> 新版本·点击更新',
+                updating: '<i class="fa-solid fa-circle-notch fa-spin"></i> 更新中',
+                updated: '<i class="fa-solid fa-rotate-right"></i> 刷新生效',
+            };
+            btn.html(map[s] || map.idle);
+            btn.toggleClass('aqs-update-avail', s === 'available' || s === 'updated');
+        }
+
+        async function checkUpdate(silent) {
+            if (updState === 'checking' || updState === 'updating') return;
+            setUpdateState('checking');
+            for (const g of [false, true]) {
+                try {
+                    const res = await fetch('/api/extensions/version', {
+                        method: 'POST',
+                        headers: ctx.getRequestHeaders(),
+                        body: JSON.stringify({ extensionName: EXT_NAME, global: g }),
+                    });
+                    if (!res.ok) continue;
+                    const data = await res.json();
+                    updGlobal = g;
+                    if (data.isUpToDate === false) {
+                        setUpdateState('available');
+                        if (!silent) toastr.info('发现新版本，点按钮一键更新', 'API 快切');
+                    } else {
+                        setUpdateState('latest');
+                        if (!silent) toastr.success('已是最新版本 v' + VERSION, 'API 快切');
+                    }
+                    return;
+                } catch { /* 尝试下一种 */ }
+            }
+            setUpdateState('idle');
+            if (!silent) toastr.warning('无法检查更新：需通过「安装扩展」粘贴仓库链接安装才支持', 'API 快切');
+        }
+
+        async function doUpdate() {
+            setUpdateState('updating');
+            try {
+                const res = await fetch('/api/extensions/update', {
+                    method: 'POST',
+                    headers: ctx.getRequestHeaders(),
+                    body: JSON.stringify({ extensionName: EXT_NAME, global: updGlobal }),
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                setUpdateState('updated');
+                if (confirm('更新完成！立即刷新页面使新版本生效？')) {
+                    location.reload();
+                }
+            } catch (err) {
+                setUpdateState('available');
+                toastr.error(String(err && err.message || err), '更新失败');
+            }
+        }
+
         /* ---------------- 模型列表获取 ---------------- */
         async function fetchModelList(url, key) {
             await writeKey(key);
@@ -104,12 +172,12 @@
                 <div id="aqs_model_modal">
                   <div class="aqs-modal-box">
                     <div class="aqs-modal-head">
-                      <span><i class="fa-solid fa-microchip"></i> 选择模型</span>
+                      <span><i class="fa-solid fa-microchip"></i> MODEL·SELECT<i class="aqs-blink">▊</i></span>
                       <i class="fa-solid fa-xmark aqs-modal-close" title="关闭"></i>
                     </div>
                     <input class="text_pole aqs-modal-filter" placeholder="搜索模型…">
                     <div class="aqs-modal-list">
-                      <div class="aqs-modal-loading"><i class="fa-solid fa-circle-notch fa-spin"></i>&nbsp; 正在获取模型列表…</div>
+                      <div class="aqs-modal-loading"><i class="fa-solid fa-circle-notch fa-spin"></i>&nbsp; SCANNING…</div>
                     </div>
                   </div>
                 </div>`);
@@ -150,18 +218,19 @@
         function profileCard(p) {
             const active = isActive(p);
             const card = $('<div class="aqs-card"></div>').toggleClass('aqs-active', active);
+            card.append($('<span class="aqs-hud aqs-hud-tl"></span>'), $('<span class="aqs-hud aqs-hud-br"></span>'));
 
             const head = $('<div class="aqs-card-head"></div>');
             $('<span class="aqs-dot"></span>').appendTo(head);
             $('<span class="aqs-card-name"></span>').text(p.name).appendTo(head);
-            if (active) $('<span class="aqs-badge">当前</span>').appendTo(head);
+            if (active) $('<span class="aqs-badge">LINKED</span>').appendTo(head);
             card.append(head);
 
             $('<div class="aqs-card-url"></div>').text(p.url).appendTo(card);
 
             const meta = $('<div class="aqs-card-meta"></div>');
             if (p.model) $('<span class="aqs-chip aqs-chip-model"></span>').text(p.model).appendTo(meta);
-            $('<span class="aqs-chip aqs-chip-dim"></span>').text(p.key ? 'Key ✓' : '无 Key').appendTo(meta);
+            $('<span class="aqs-chip aqs-chip-dim"></span>').text(p.key ? 'KEY ✓' : 'NO KEY').appendTo(meta);
             card.append(meta);
 
             const btns = $('<div class="aqs-card-btns"></div>');
@@ -306,7 +375,7 @@
         /* ---------------- 快捷面板（魔棒菜单） ---------------- */
         function renderQuickPanel() {
             const panel = $('#aqs_quick_panel').empty();
-            $('<div class="aqs-qp-title"><i class="fa-solid fa-shuffle"></i> API 快切</div>').appendTo(panel);
+            $('<div class="aqs-qp-title"><i class="fa-solid fa-shuffle"></i> API·SWITCH</div>').appendTo(panel);
             if (!settings.profiles.length) {
                 $('<div class="aqs-empty">先去扩展设置里添加配置</div>').appendTo(panel);
                 return;
@@ -387,6 +456,13 @@
               <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
+              <div class="aqs-sys-bar">
+                <span class="aqs-sys-id">API·SWITCHER</span>
+                <span class="aqs-sys-ver">v${VERSION}</span>
+                <i class="aqs-blink">▊</i>
+                <span class="aqs-sys-spacer"></span>
+                <button id="aqs_update_btn" class="menu_button aqs-btn"><i class="fa-solid fa-satellite-dish"></i> 检查更新</button>
+              </div>
               <div id="aqs_profile_list"></div>
               <div class="aqs-io-btns">
                 <button id="aqs_export" class="menu_button aqs-btn" title="导出全部配置为 JSON 备份"><i class="fa-solid fa-download"></i> 导出</button>
@@ -415,6 +491,11 @@
         const container = $('#extensions_settings2').length ? $('#extensions_settings2') : $('#extensions_settings');
         container.append(html);
 
+        $('#aqs_update_btn').on('click', () => {
+            if (updState === 'available') { doUpdate(); return; }
+            if (updState === 'updated') { location.reload(); return; }
+            checkUpdate(false);
+        });
         $('#aqs_save').on('click', onSave);
         $('#aqs_cancel_edit').on('click', resetForm);
         $('#aqs_fill_current').on('click', () => {
@@ -443,7 +524,8 @@
         setupQuickPanel();
         setupSlashCommand();
         renderList();
+        setTimeout(() => checkUpdate(true), 3000);
 
-        console.log('[API快切] v1.1.0 已加载');
+        console.log('[API快切] v' + VERSION + ' 已加载');
     });
 })();

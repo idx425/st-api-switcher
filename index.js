@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '1.2.0';
+    const VERSION = '1.2.1';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
     function getCtx() {
@@ -65,6 +65,9 @@
                 await sleep(150);
 
                 $('#custom_api_url_text').val(p.url || '').trigger('input');
+                // 关键修复：同步可见密钥输入框。酒馆的“连接”按钮会把该输入框的残留内容
+                // 重新写回密钥库，若不同步，旧 Key 会覆盖刚写入的新 Key（经典切换失效 bug）
+                $('#api_key_custom').val(p.key || '').trigger('input').trigger('change');
                 if (p.model) $('#custom_model_id').val(p.model).trigger('input');
                 await sleep(150);
 

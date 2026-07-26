@@ -1,5 +1,5 @@
 /* ============================================================
-   API 快切 · 高级暗色玻璃 v2.1.2
+   API 快切 · 高级暗色玻璃 v2.1.8
    设计语言：Dark Glassmorphism · 浅色主题强制可读 · 手机底部弹层
    三端适配：手机单列 / 平板与桌面自动多列
    ============================================================ */
@@ -830,53 +830,68 @@
 }
 
 /* ---- 模型选择弹窗 ---- */
+/* 遮罩：flex 居中；弹窗：固定比例高度 + 内部列表 flex 滚动 */
 
 #aqs_model_modal {
     position: fixed !important;
     inset: 0 !important;
-    z-index: 99999 !important;
-    background: rgb(2 4 10 / 72%);
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    height: 100dvh !important;
+    z-index: 2147483000 !important;
+    background: rgb(2 4 10 / 86%) !important;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     display: flex !important;
     align-items: center !important;
     justify-content: center !important;
+    margin: 0 !important;
     padding: 12px !important;
-    padding-top: max(12px, env(safe-area-inset-top, 0px)) !important;
-    padding-bottom: max(12px, env(safe-area-inset-bottom, 0px)) !important;
     box-sizing: border-box !important;
     overflow: hidden !important;
+    transform: none !important;
     animation: aqs-in 0.16s ease;
 }
 
-.aqs-modal-box {
-    width: min(440px, calc(100vw - 24px)) !important;
+#aqs_model_modal .aqs-modal-box {
+    position: relative !important;
+    top: auto !important;
+    left: auto !important;
+    right: auto !important;
+    bottom: auto !important;
+    width: min(480px, calc(100vw - 24px)) !important;
     max-width: calc(100vw - 24px) !important;
-    /* 默认高度用 clamp；JS 会再用像素覆盖，避免 WebView vh 塌缩 */
-    height: 78vh !important;
-    height: 78dvh !important;
-    max-height: min(680px, calc(100vh - 24px)) !important;
-    max-height: min(680px, calc(100dvh - 24px)) !important;
-    min-height: 360px !important;
+    height: min(86vh, 720px) !important;
+    height: min(86dvh, 720px) !important;
+    max-height: min(86dvh, calc(100vh - 24px)) !important;
+    min-height: 0 !important;
+    margin: 0 auto !important;
+    transform: none !important;
     display: flex !important;
     flex-direction: column !important;
-    min-width: 0;
-    flex-shrink: 0;
-    margin: auto !important;
+    flex: 0 1 auto !important;
     border: 1px solid var(--aqs-line-hi);
     border-radius: 19px !important;
-    background: var(--aqs-glass), #0f1522;
+    background: var(--aqs-glass), #0f1522 !important;
     background-color: #0f1522 !important;
     box-shadow: inset 0 1px 0 rgb(255 255 255 / 7%), 0 22px 60px rgb(0 0 0 / 60%), var(--aqs-glow);
-    padding: 15px;
-    position: relative;
+    padding: 14px !important;
     overflow: hidden !important;
-    color: var(--aqs-fg) !important;
-    -webkit-text-fill-color: var(--aqs-fg);
+    color: #f8fbff !important;
+    -webkit-text-fill-color: #f8fbff !important;
     box-sizing: border-box !important;
+    z-index: 2147483001 !important;
+    visibility: visible !important;
+    opacity: 1 !important;
 }
 
-.aqs-modal-box::before {
+#aqs_model_modal .aqs-modal-box::before {
     content: '';
     position: absolute;
     top: 0;
@@ -884,9 +899,10 @@
     right: 20px;
     height: 1px;
     background: linear-gradient(90deg, transparent, rgb(34 211 238 / 65%), rgb(129 140 248 / 65%), transparent);
+    pointer-events: none;
 }
 
-.aqs-modal-head {
+#aqs_model_modal .aqs-modal-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -895,11 +911,12 @@
     letter-spacing: 0.12em;
     font-size: 0.88em;
     padding: 4px 2px 11px;
-    flex-shrink: 0;
-    color: var(--aqs-fg-strong);
+    flex: 0 0 auto !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
 }
 
-.aqs-modal-head > span {
+#aqs_model_modal .aqs-modal-head > span {
     background: var(--aqs-grad);
     -webkit-background-clip: text;
     background-clip: text;
@@ -907,100 +924,110 @@
     -webkit-text-fill-color: transparent !important;
 }
 
-.aqs-modal-head .aqs-blink {
+#aqs_model_modal .aqs-modal-head .aqs-blink {
     -webkit-text-fill-color: var(--aqs-c1) !important;
     color: var(--aqs-c1) !important;
     margin-left: 4px;
 }
 
-.aqs-modal-close {
+#aqs_model_modal .aqs-modal-close {
     cursor: pointer;
-    color: var(--aqs-fg-strong) !important;
-    -webkit-text-fill-color: var(--aqs-fg-strong) !important;
-    opacity: 0.9 !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    opacity: 0.95 !important;
     padding: 8px 10px;
     transition: opacity 0.12s ease;
 }
 
-.aqs-modal-close:hover {
+#aqs_model_modal .aqs-modal-close:hover {
     opacity: 1 !important;
 }
 
-.aqs-modal-filter {
-    width: 100%;
+#aqs_model_modal .aqs-modal-filter {
+    width: 100% !important;
     border-radius: 11px;
-    margin-bottom: 8px;
+    margin-bottom: 10px;
     font-family: var(--aqs-mono);
-    flex-shrink: 0;
-    color: var(--aqs-fg-strong) !important;
-    -webkit-text-fill-color: var(--aqs-fg-strong) !important;
-    background: rgb(255 255 255 / 8%) !important;
+    flex: 0 0 auto !important;
+    box-sizing: border-box !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    background: rgb(255 255 255 / 10%) !important;
+    font-size: 16px !important;
+    padding: 11px 12px !important;
 }
 
-.aqs-modal-list {
+#aqs_model_modal .aqs-modal-list {
     overflow-y: auto !important;
     overflow-x: hidden !important;
     flex: 1 1 auto !important;
-    min-height: 260px !important;
+    min-height: 0 !important;
     height: auto !important;
     max-height: none !important;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
     touch-action: pan-y;
     counter-reset: aqsm;
-    color: var(--aqs-fg-strong);
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    box-sizing: border-box !important;
 }
 
-.aqs-modal-loading {
+#aqs_model_modal .aqs-modal-loading {
     padding: 28px 0;
     text-align: center;
-    color: var(--aqs-fg-muted) !important;
-    -webkit-text-fill-color: var(--aqs-fg-muted) !important;
+    color: #d5deee !important;
+    -webkit-text-fill-color: #d5deee !important;
     opacity: 1 !important;
     font-family: var(--aqs-mono);
     letter-spacing: 0.12em;
 }
 
-.aqs-modal-error {
+#aqs_model_modal .aqs-modal-error {
     padding: 18px 8px !important;
     white-space: normal !important;
     line-height: 1.45;
     text-align: center;
+    color: #ffb4b4 !important;
+    -webkit-text-fill-color: #ffb4b4 !important;
 }
 
-.aqs-modal-item {
+#aqs_model_modal .aqs-modal-item {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 11px 12px;
+    padding: 12px 12px;
     border-radius: 11px;
     cursor: pointer;
     font-family: var(--aqs-mono);
-    font-size: 0.88em;
+    font-size: 0.92em;
     border: 1px solid transparent;
     overflow: hidden;
     white-space: nowrap;
-    color: var(--aqs-fg-strong) !important;
-    -webkit-text-fill-color: var(--aqs-fg-strong) !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
     opacity: 1 !important;
     transition: background 0.12s ease, border-color 0.12s ease;
     -webkit-tap-highlight-color: transparent;
+    min-height: 44px;
 }
 
-.aqs-modal-item::before {
+#aqs_model_modal .aqs-modal-item::before {
     counter-increment: aqsm;
     content: counter(aqsm, decimal-leading-zero);
     font-size: 0.76em;
-    color: var(--aqs-c1) !important;
-    -webkit-text-fill-color: var(--aqs-c1) !important;
-    opacity: 0.75 !important;
+    color: #67e8f9 !important;
+    -webkit-text-fill-color: #67e8f9 !important;
+    opacity: 0.9 !important;
     flex-shrink: 0;
 }
 
-.aqs-modal-item:hover,
-.aqs-modal-item:active {
-    background: rgb(34 211 238 / 10%);
-    border-color: rgb(34 211 238 / 30%);
+#aqs_model_modal .aqs-modal-item:hover,
+#aqs_model_modal .aqs-modal-item:active {
+    background: rgb(34 211 238 / 12%);
+    border-color: rgb(34 211 238 / 34%);
 }
 
 /* ---- 滚动条 ---- */
@@ -1117,40 +1144,25 @@
 
 @media (max-width: 480px) {
     #aqs_model_modal {
+        padding: 10px !important;
         align-items: center !important;
         justify-content: center !important;
-        padding: 10px !important;
     }
 
     #aqs_model_modal .aqs-modal-box {
         width: calc(100vw - 20px) !important;
         max-width: calc(100vw - 20px) !important;
-        /* 禁止用 100% 当高度上限：部分 WebView 会把它算成父级内容高度导致只剩一条缝 */
-        height: 90vh !important;
-        height: 90dvh !important;
-        max-height: 90vh !important;
-        max-height: 90dvh !important;
-        min-height: 380px !important;
-        margin: auto !important;
+        height: min(88dvh, calc(100vh - 20px)) !important;
+        max-height: min(88dvh, calc(100vh - 20px)) !important;
+        min-height: min(300px, 70dvh) !important;
         border-radius: 16px !important;
-        border: 1px solid var(--aqs-line-hi) !important;
         padding: 12px 14px !important;
-        display: flex !important;
-        flex-direction: column !important;
-        flex: 0 0 auto !important;
-    }
-
-    #aqs_model_modal .aqs-modal-list {
-        flex: 1 1 auto !important;
-        min-height: 240px !important;
-        overflow-y: auto !important;
-        -webkit-overflow-scrolling: touch;
     }
 
     #aqs_model_modal .aqs-modal-item {
         padding: 14px 12px;
-        min-height: 46px;
-        font-size: 0.92em;
+        min-height: 48px;
+        font-size: 0.95em;
     }
 
     #aqs_quick_panel {
@@ -1218,6 +1230,114 @@
 .aqs-settings .aqs-btn i {
     color: #ffffff !important;
     -webkit-text-fill-color: #ffffff !important;
+    opacity: 1 !important;
+}
+
+
+
+/* v2.1.8 强制可读 + 弹窗居中兜底（盖过酒馆主题 opacity/color） */
+#aqs_model_modal,
+#aqs_model_modal .aqs-modal-box,
+#aqs_model_modal .aqs-modal-list,
+#aqs_model_modal .aqs-modal-item {
+    opacity: 1 !important;
+}
+
+#aqs_api_embed,
+#aqs_api_embed *,
+#aqs_quick_panel,
+#aqs_quick_panel *,
+.aqs-settings,
+.aqs-settings * {
+    --SmartThemeBodyColor: #f3f7ff;
+    --SmartThemeEmColor: #d5deee;
+    --SmartThemeQuoteColor: #ffffff;
+}
+
+#aqs_api_embed .aqs-qp-item,
+#aqs_quick_panel .aqs-qp-item,
+.aqs-settings .aqs-card {
+    opacity: 1 !important;
+    filter: none !important;
+}
+
+#aqs_api_embed .aqs-qp-name,
+#aqs_quick_panel .aqs-qp-name,
+#aqs_api_embed .aqs-api-embed-title,
+#aqs_api_embed .aqs-api-embed-title span,
+.aqs-settings .aqs-card-name,
+.aqs-settings .aqs-form-title {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    opacity: 1 !important;
+}
+
+#aqs_api_embed .aqs-qp-model,
+#aqs_quick_panel .aqs-qp-model,
+#aqs_api_embed .aqs-note,
+#aqs_api_embed .aqs-api-embed-ver,
+.aqs-settings .aqs-card-url,
+.aqs-settings .aqs-chip,
+.aqs-settings .aqs-field-label {
+    color: #e4ebf7 !important;
+    -webkit-text-fill-color: #e4ebf7 !important;
+    opacity: 1 !important;
+}
+
+
+/* ---- 魔法棒菜单项：强制高对比，不受酒馆浅色主题 text-fill 影响 ---- */
+#aqs_wand_btn,
+#aqs_wand_btn .list-group-item,
+#aqs_wand_btn .extensionsMenuExtensionButton {
+    color: #f5f8ff !important;
+    -webkit-text-fill-color: #f5f8ff !important;
+    opacity: 1 !important;
+}
+#aqs_wand_btn .list-group-item {
+    font-weight: 600 !important;
+}
+#aqs_wand_btn .extensionsMenuExtensionButton {
+    color: #67e8f9 !important;
+    -webkit-text-fill-color: #67e8f9 !important;
+}
+
+/* 插头抽屉内嵌：标题/站点名再提亮一档 */
+#aqs_api_embed,
+#aqs_api_embed .aqs-api-embed-title,
+#aqs_api_embed .aqs-api-embed-title span,
+#aqs_api_embed .aqs-qp-name,
+#aqs_api_embed .aqs-qp-item {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    opacity: 1 !important;
+}
+#aqs_api_embed .aqs-qp-model,
+#aqs_api_embed .aqs-api-embed-ver,
+#aqs_api_embed .aqs-note,
+#aqs_api_embed .aqs-chip {
+    color: #e2eaf8 !important;
+    -webkit-text-fill-color: #e2eaf8 !important;
+    opacity: 1 !important;
+}
+#aqs_api_embed .menu_button,
+#aqs_api_embed .menu_button i,
+#aqs_api_embed .aqs-btn,
+#aqs_api_embed .aqs-btn i {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    opacity: 1 !important;
+}
+#aqs_quick_panel,
+#aqs_quick_panel .aqs-qp-name,
+#aqs_quick_panel .aqs-qp-item {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    opacity: 1 !important;
+}
+#aqs_quick_panel .aqs-qp-model,
+#aqs_quick_panel .aqs-qp-group {
+    color: #e2eaf8 !important;
+    -webkit-text-fill-color: #e2eaf8 !important;
     opacity: 1 !important;
 }
 

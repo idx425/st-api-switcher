@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '2.1.3';
+    const VERSION = '2.1.8';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -469,55 +469,162 @@
             }
         }
 
+        function viewportSize() {
+            const vv = window.visualViewport;
+            const nums = (...xs) => xs.filter((n) => typeof n === 'number' && isFinite(n) && n > 0);
+            // 取最可信的可视宽高：visualViewport 优先，但异常过小时回退
+            let vh = Math.round(Math.max(...nums(
+                vv && vv.height,
+                window.innerHeight,
+                document.documentElement && document.documentElement.clientHeight,
+                640,
+            )));
+            let vw = Math.round(Math.max(...nums(
+                vv && vv.width,
+                window.innerWidth,
+                document.documentElement && document.documentElement.clientWidth,
+                360,
+            )));
+            // 有的手机浏览器 vv 只报地址栏缝隙高度，强制用 inner*
+            if (vv && vv.height && window.innerHeight && vv.height < window.innerHeight * 0.6) {
+                vh = Math.round(window.innerHeight);
+            }
+            if (vv && vv.width && window.innerWidth && vv.width < window.innerWidth * 0.6) {
+                vw = Math.round(window.innerWidth);
+            }
+            // 不要硬抬高 vh，否则短屏会把弹窗算到屏幕外
+            return { vw: Math.max(280, vw), vh: Math.max(280, vh) };
+        }
+
         function layoutModelModal(root) {
             const el = root && root.nodeType ? root : (root && root[0]) || null;
-            if (!el) return;
+            if (!el || !el.isConnected) return;
             const box = el.querySelector('.aqs-modal-box');
             if (!box) return;
-            const vv = window.visualViewport;
-            const vh = Math.round(
-                (vv && vv.height) ||
-                window.innerHeight ||
-                document.documentElement.clientHeight ||
-                640
-            );
-            const vw = Math.round(
-                (vv && vv.width) ||
-                window.innerWidth ||
-                document.documentElement.clientWidth ||
-                360
-            );
-            // 强制居中，覆盖任何把弹层贴顶/贴底的旧 CSS
-            el.style.setProperty('display', 'flex', 'important');
-            el.style.setProperty('align-items', 'center', 'important');
-            el.style.setProperty('justify-content', 'center', 'important');
-            el.style.setProperty('padding', '10px', 'important');
-            // 像素锁死高度：禁止 height:100% / clamp(...100%) 在部分 WebView 塌成一条缝
-            const h = Math.max(380, Math.min(Math.round(vh * 0.9), vh - 20));
-            const w = Math.max(280, Math.min(440, vw - 20));
-            box.style.setProperty('height', h + 'px', 'important');
-            box.style.setProperty('max-height', h + 'px', 'important');
-            box.style.setProperty('min-height', h + 'px', 'important');
-            box.style.setProperty('width', w + 'px', 'important');
-            box.style.setProperty('max-width', w + 'px', 'important');
-            box.style.setProperty('margin', 'auto', 'important');
-            box.style.setProperty('flex', '0 0 auto', 'important');
-            box.style.setProperty('display', 'flex', 'important');
-            box.style.setProperty('flex-direction', 'column', 'important');
-            box.style.setProperty('box-sizing', 'border-box', 'important');
-            const list = box.querySelector('.aqs-modal-list');
-            if (list) {
-                const head = box.querySelector('.aqs-modal-head');
-                const filter = box.querySelector('.aqs-modal-filter');
-                const used = (head ? head.offsetHeight : 48) + (filter ? filter.offsetHeight : 44) + 48;
-                const lh = Math.max(240, h - used);
-                list.style.setProperty('height', lh + 'px', 'important');
-                list.style.setProperty('max-height', lh + 'px', 'important');
-                list.style.setProperty('min-height', lh + 'px', 'important');
-                list.style.setProperty('flex', '1 1 auto', 'important');
-                list.style.setProperty('overflow-y', 'auto', 'important');
-                list.style.setProperty('-webkit-overflow-scrolling', 'touch', 'important');
+            const list = el.querySelector('.aqs-modal-list');
+            const head = box.querySelector('.aqs-modal-head');
+            const filter = box.querySelector('.aqs-modal-filter');
+
+            const { vw, vh } = viewportSize();
+            const isPhone = vw < 700;
+            // 用 flex 居中全屏遮罩，彻底避开 absolute top 算偏导致「只剩一条缝」
+            el.style.cssText = [
+                'position:fixed',
+                'inset:0',
+                'top:0',
+                'left:0',
+                'right:0',
+                'bottom:0',
+                'width:100%',
+                'height:100%',
+                'width:100vw',
+                'height:100vh',
+                'height:100dvh',
+                'margin:0',
+                'padding:' + (isPhone ? '12px' : '24px'),
+                'display:flex',
+                'align-items:center',
+                'justify-content:center',
+                'box-sizing:border-box',
+                'overflow:hidden',
+                'z-index:2147483000',
+                'transform:none',
+                'background:rgba(2,4,10,0.86)',
+                'backdrop-filter:blur(8px)',
+                '-webkit-backdrop-filter:blur(8px)',
+                'visibility:visible',
+                'opacity:1',
+                'pointer-events:auto',
+            ].map((s) => s + ' !important').join(';') + ';';
+
+            const pad = isPhone ? 12 : 24;
+            const boxW = Math.max(280, Math.min(isPhone ? (vw - pad * 2) : 480, vw - pad * 2));
+            // 永远不超过可视区；短屏优先“塞进屏幕”而不是硬撑 360px
+            const maxBoxH = Math.max(240, vh - pad * 2);
+            const preferH = Math.round(vh * (isPhone ? 0.86 : 0.78));
+            const floorH = Math.min(isPhone ? 320 : 360, maxBoxH);
+            const boxH = Math.max(floorH, Math.min(preferH, maxBoxH));
+
+            box.style.cssText = [
+                'position:relative',
+                'top:auto',
+                'left:auto',
+                'right:auto',
+                'bottom:auto',
+                'width:' + boxW + 'px',
+                'max-width:calc(100vw - ' + (pad * 2) + 'px)',
+                'height:' + boxH + 'px',
+                'max-height:' + maxBoxH + 'px',
+                'min-height:0',
+                'margin:0',
+                'transform:none',
+                'display:flex',
+                'flex-direction:column',
+                'flex:0 1 auto',
+                'box-sizing:border-box',
+                'overflow:hidden',
+                'visibility:visible',
+                'opacity:1',
+                'z-index:2147483001',
+                'border:1px solid rgba(255,255,255,0.28)',
+                'border-radius:' + (isPhone ? '16' : '19') + 'px',
+                'background:#0f1522',
+                'padding:14px',
+                'color:#f8fbff',
+                '-webkit-text-fill-color:#f8fbff',
+                'pointer-events:auto',
+                'box-shadow:0 22px 60px rgba(0,0,0,0.65)',
+            ].map((s) => s + ' !important').join(';') + ';';
+
+            if (head) {
+                head.style.cssText = [
+                    'display:flex',
+                    'align-items:center',
+                    'justify-content:space-between',
+                    'flex:0 0 auto',
+                    'padding:4px 2px 11px',
+                    'box-sizing:border-box',
+                    'width:100%',
+                    'color:#ffffff',
+                    '-webkit-text-fill-color:#ffffff',
+                ].map((s) => s + ' !important').join(';') + ';';
             }
+            if (filter) {
+                filter.style.cssText = [
+                    'display:block',
+                    'width:100%',
+                    'flex:0 0 auto',
+                    'box-sizing:border-box',
+                    'margin:0 0 10px 0',
+                    'border-radius:11px',
+                    'color:#ffffff',
+                    '-webkit-text-fill-color:#ffffff',
+                    'background:rgba(255,255,255,0.10)',
+                    'padding:11px 12px',
+                    'font-size:16px',
+                ].map((s) => s + ' !important').join(';') + ';';
+            }
+            if (list) {
+                list.style.cssText = [
+                    'display:block',
+                    'visibility:visible',
+                    'opacity:1',
+                    'flex:1 1 auto',
+                    'min-height:0',
+                    'height:auto',
+                    'max-height:none',
+                    'overflow-y:auto',
+                    'overflow-x:hidden',
+                    '-webkit-overflow-scrolling:touch',
+                    'overscroll-behavior:contain',
+                    'touch-action:pan-y',
+                    'color:#ffffff',
+                    '-webkit-text-fill-color:#ffffff',
+                    'box-sizing:border-box',
+                    'width:100%',
+                ].map((s) => s + ' !important').join(';') + ';';
+            }
+            el.setAttribute('data-aqs-layout', vw + 'x' + vh + (isPhone ? ':phone' : ':desk'));
         }
 
         function openModelPicker(url, key, onPick) {
@@ -526,11 +633,11 @@
 
             $('#aqs_model_modal').remove();
             const overlay = $(`
-                <div id="aqs_model_modal">
+                <div id="aqs_model_modal" role="dialog" aria-modal="true" aria-label="选择模型">
                   <div class="aqs-modal-box">
                     <div class="aqs-modal-head">
                       <span><i class="fa-solid fa-microchip"></i> MODEL·SELECT<i class="aqs-blink">▊</i></span>
-                      <i class="fa-solid fa-xmark aqs-modal-close" title="关闭"></i>
+                      <i class="fa-solid fa-xmark aqs-modal-close" title="关闭" role="button" tabindex="0"></i>
                     </div>
                     <input class="text_pole aqs-modal-filter" placeholder="搜索模型…">
                     <div class="aqs-modal-list">
@@ -538,32 +645,49 @@
                     </div>
                   </div>
                 </div>`);
-            $('body').append(overlay);
-            // 双 rAF + 短延迟，等 DOM/字体布局稳定后再量高度
+            // 挂到 <html>，避开 body 内 transform/overflow 把 fixed 算歪
+            $(document.documentElement).append(overlay);
+            const host = overlay[0];
+            const relayout = () => {
+                try { layoutModelModal(host); } catch (e) { console.error('[API快切] layout', e); }
+            };
+            relayout();
             requestAnimationFrame(() => {
-                layoutModelModal(overlay[0]);
-                requestAnimationFrame(() => layoutModelModal(overlay[0]));
+                relayout();
+                requestAnimationFrame(relayout);
             });
-            setTimeout(() => layoutModelModal(overlay[0]), 50);
-            const onResize = () => layoutModelModal(overlay[0]);
+            setTimeout(relayout, 16);
+            setTimeout(relayout, 50);
+            setTimeout(relayout, 160);
+            setTimeout(relayout, 360);
+            const onResize = () => relayout();
             window.addEventListener('resize', onResize);
             window.addEventListener('orientationchange', onResize);
-            if (window.visualViewport) window.visualViewport.addEventListener('resize', onResize);
+            if (window.visualViewport) {
+                window.visualViewport.addEventListener('resize', onResize);
+                window.visualViewport.addEventListener('scroll', onResize);
+            }
 
             const prevOverflow = document.body.style.overflow;
             const prevTouch = document.body.style.touchAction;
+            const prevHtmlOverflow = document.documentElement.style.overflow;
             const close = () => {
                 document.body.style.overflow = prevOverflow;
                 document.body.style.touchAction = prevTouch;
+                document.documentElement.style.overflow = prevHtmlOverflow;
                 window.removeEventListener('resize', onResize);
                 window.removeEventListener('orientationchange', onResize);
-                if (window.visualViewport) window.visualViewport.removeEventListener('resize', onResize);
+                if (window.visualViewport) {
+                    window.visualViewport.removeEventListener('resize', onResize);
+                    window.visualViewport.removeEventListener('scroll', onResize);
+                }
                 overlay.remove();
                 $(document).off('keydown.aqsmodal');
             };
             document.body.style.overflow = 'hidden';
             document.body.style.touchAction = 'none';
-            // 弹窗挂在 body 上，点击事件若冒泡到 document，酒馆会判定"点击了面板外部"
+            document.documentElement.style.overflow = 'hidden';
+            // 弹窗挂在 html 上，点击事件若冒泡到 document，酒馆会判定"点击了面板外部"
             // 而关闭整个扩展设置面板，导致选完模型被踢回主界面 —— 全部拦截
             overlay.on('pointerdown pointerup mousedown mouseup click touchstart touchend wheel', (e) => {
                 e.stopPropagation();
@@ -571,7 +695,12 @@
             });
             // 列表内部允许滚动，外层不滚动页面
             overlay.find('.aqs-modal-list').on('touchmove wheel', (e) => e.stopPropagation());
-            overlay.find('.aqs-modal-close').on('click', close);
+            overlay.find('.aqs-modal-close').on('click keydown', (e) => {
+                if (e.type === 'click' || e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    close();
+                }
+            });
             $(document).on('keydown.aqsmodal', (e) => { if (e.key === 'Escape') close(); });
 
             const list = overlay.find('.aqs-modal-list');
@@ -582,12 +711,12 @@
                 $('<button type="button" class="menu_button aqs-btn aqs-btn-primary" style="margin-top:12px;">重试</button>')
                     .on('click', () => {
                         list.html('<div class="aqs-modal-loading"><i class="fa-solid fa-circle-notch fa-spin"></i>&nbsp; SCANNING…</div>');
-                        layoutModelModal(overlay[0]);
+                        relayout();
                         doFetch();
                     })
                     .appendTo(box);
                 list.append(box);
-                layoutModelModal(overlay[0]);
+                relayout();
             };
 
             const doFetch = () => {
@@ -599,18 +728,28 @@
                             const subset = models.filter((m) => m.toLowerCase().includes(f));
                             if (!subset.length) {
                                 list.append($('<div class="aqs-empty">没有匹配的模型</div>'));
-                                layoutModelModal(overlay[0]);
+                                relayout();
                                 return;
                             }
                             for (const m of subset) {
-                                $('<div class="aqs-modal-item"></div>').text(m)
+                                $('<div class="aqs-modal-item" tabindex="0" role="option"></div>').text(m)
+                                    .css({ color: '#ffffff', webkitTextFillColor: '#ffffff', opacity: 1 })
                                     .on('click', () => { close(); onPick(m); })
+                                    .on('keydown', (e) => {
+                                        if (e.key === 'Enter' || e.key === ' ') {
+                                            e.preventDefault();
+                                            close();
+                                            onPick(m);
+                                        }
+                                    })
                                     .appendTo(list);
                             }
-                            layoutModelModal(overlay[0]);
+                            relayout();
                         };
                         render('');
                         overlay.find('.aqs-modal-filter').off('input.aqs').on('input.aqs', function () { render(this.value); });
+                        relayout();
+                        setTimeout(relayout, 40);
                         toastr.success('共 ' + models.length + ' 个模型', 'API 快切');
                     })
                     .catch((err) => {

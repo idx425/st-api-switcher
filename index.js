@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '1.4.1';
+    const VERSION = '1.4.2';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -161,6 +161,19 @@
             return null;
         }
 
+        let updateNotified = false;
+
+        function notifyUpdate(remoteVer) {
+            if (updateNotified) return;
+            updateNotified = true;
+            const label = remoteVer ? ' v' + remoteVer : '';
+            toastr.info(
+                '检测到新版本' + label + '，点击此通知立即更新（或在插件面板顶部点更新按钮）',
+                'API 快切 · 有更新',
+                { timeOut: 12000, extendedTimeOut: 4000, onclick: () => doUpdate() },
+            );
+        }
+
         async function checkUpdate(silent) {
             if (updState === 'checking' || updState === 'updating') return;
             setUpdateState('checking');
@@ -182,7 +195,7 @@
                     updGlobal = g;
                     if (data.isUpToDate === false) {
                         setUpdateState('available');
-                        if (!silent) toastr.info('发现新版本，点按钮一键更新', 'API 快切');
+                        notifyUpdate('');
                     } else {
                         setUpdateState('latest');
                         if (!silent) toastr.success('已是最新版本 v' + VERSION, 'API 快切');
@@ -194,7 +207,7 @@
             if (remoteVer && cmpVer(remoteVer, VERSION) > 0) {
                 if (scope !== null) updGlobal = scope;
                 setUpdateState('available');
-                if (!silent) toastr.info(`发现新版本 v${remoteVer}，点按钮一键更新`, 'API 快切');
+                notifyUpdate(remoteVer);
                 return;
             }
             if (remoteVer) {

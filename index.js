@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '1.4.0';
+    const VERSION = '1.4.1';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -293,7 +293,12 @@
                 </div>`);
             $('body').append(overlay);
             const close = () => { overlay.remove(); $(document).off('keydown.aqsmodal'); };
-            overlay.on('pointerdown', (e) => { if (e.target === overlay[0]) close(); });
+            // 弹窗挂在 body 上，点击事件若冒泡到 document，酒馆会判定"点击了面板外部"
+            // 而关闭整个扩展设置面板，导致选完模型被踢回主界面 —— 全部拦截
+            overlay.on('pointerdown pointerup mousedown mouseup click touchstart touchend', (e) => {
+                e.stopPropagation();
+                if (e.type === 'pointerdown' && e.target === overlay[0]) close();
+            });
             overlay.find('.aqs-modal-close').on('click', close);
             $(document).on('keydown.aqsmodal', (e) => { if (e.key === 'Escape') close(); });
 

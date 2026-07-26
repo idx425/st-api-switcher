@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '1.4.2';
+    const VERSION = '2.0.0';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -163,8 +163,8 @@
 
         let updateNotified = false;
 
-        function notifyUpdate(remoteVer) {
-            if (updateNotified) return;
+        function notifyUpdate(remoteVer, force) {
+            if (updateNotified && !force) return;
             updateNotified = true;
             const label = remoteVer ? ' v' + remoteVer : '';
             toastr.info(
@@ -195,7 +195,7 @@
                     updGlobal = g;
                     if (data.isUpToDate === false) {
                         setUpdateState('available');
-                        notifyUpdate('');
+                        notifyUpdate('', !silent);
                     } else {
                         setUpdateState('latest');
                         if (!silent) toastr.success('已是最新版本 v' + VERSION, 'API 快切');
@@ -207,7 +207,7 @@
             if (remoteVer && cmpVer(remoteVer, VERSION) > 0) {
                 if (scope !== null) updGlobal = scope;
                 setUpdateState('available');
-                notifyUpdate(remoteVer);
+                notifyUpdate(remoteVer, !silent);
                 return;
             }
             if (remoteVer) {
@@ -225,6 +225,7 @@
         }
 
         async function doUpdate() {
+            if (updState === 'updating') return;
             setUpdateState('updating');
             const scope = await resolveInstallScope();
             const tries = scope === null ? [updGlobal, !updGlobal] : [scope];
@@ -263,7 +264,10 @@
         async function fetchModelList(url, key) {
             // 拉模型需要临时把该站点的 Key 写进密钥库；结束后必须还原当前连接的 Key，
             // 否则给未连接的站点拉模型会污染正在使用的连接（重连时报密钥错误）
-            const prevKey = String($('#api_key_custom').val() || '');
+            // 刷新页面后密钥输入框是空的（Key 只在密钥库里），此时用"当前连接对应
+            // 的已保存站点"的 Key 兜底，保证总有值可还原
+            const activeProfile = settings.profiles.find(isActive);
+            const prevKey = String($('#api_key_custom').val() || '') || (activeProfile ? String(activeProfile.key || '') : '');
             const wrote = !!key && key !== prevKey;
             if (wrote) await writeKey(key);
             try {
@@ -637,7 +641,7 @@
                     aliases: ['aqs'],
                     helpString: '按名称切换已保存的站点，例如 /apiswitch 站点A；不带参数列出全部站点名。',
                     unnamedArgumentList: SlashCommandArgument ? [SlashCommandArgument.fromProps({
-                        description: '配置名称',
+                        description: '站点名称',
                         typeList: ARGUMENT_TYPE ? [ARGUMENT_TYPE.STRING] : undefined,
                         isRequired: false,
                     })] : [],

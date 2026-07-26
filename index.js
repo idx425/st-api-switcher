@@ -1,6 +1,7 @@
 /**
  * ST API Switcher · API 快切
  * 一键切换 OpenAI 兼容接口的 URL + API Key + 模型
+ * https://github.com/idx425/st-api-switcher
  * License: MIT
  */
 (() => {
@@ -40,18 +41,22 @@
         const currentUrl = () => normUrl($('#custom_api_url_text').val());
         const isActive = (p) => !!currentUrl() && currentUrl() === normUrl(p.url);
 
+        async function writeKey(key) {
+            const res = await fetch('/api/secrets/write', {
+                method: 'POST',
+                headers: ctx.getRequestHeaders(),
+                body: JSON.stringify({ key: 'api_key_custom', value: key || '' }),
+            });
+            if (!res.ok) throw new Error('写入密钥失败: HTTP ' + res.status);
+        }
+
         /* ---------------- 核心：应用配置 ---------------- */
         async function applyProfile(p) {
             try {
                 if (!$('#custom_api_url_text').length) {
                     throw new Error('未找到自定义接口输入框，请确认酒馆版本（需 1.12+）');
                 }
-                const res = await fetch('/api/secrets/write', {
-                    method: 'POST',
-                    headers: ctx.getRequestHeaders(),
-                    body: JSON.stringify({ key: 'api_key_custom', value: p.key || '' }),
-                });
-                if (!res.ok) throw new Error('写入密钥失败: HTTP ' + res.status);
+                await writeKey(p.key);
 
                 $('#main_api').val('openai').trigger('change');
                 $('#chat_completion_source').val('custom').trigger('change');
@@ -71,12 +76,83 @@
             }
         }
 
+        /* ---------------- 模型列表获取 ---------------- */
+        async function fetchModelList(url, key) {
+            await writeKey(key);
+            const res = await fetch('/api/backends/chat-completions/status', {
+                method: 'POST',
+                headers: ctx.getRequestHeaders(),
+                body: JSON.stringify({ chat_completion_source: 'custom', custom_url: url }),
+            });
+            if (!res.ok) throw new Error('接口返回 HTTP ' + res.status);
+            const json = await res.json();
+            if (json && json.error) throw new Error(json.message || '接口报错');
+            const arr = Array.isArray(json) ? json : (json.data || json.models || []);
+            const models = arr
+                .map((m) => (typeof m === 'string' ? m : (m.id || m.model || m.name)))
+                .filter(Boolean);
+            if (!models.length) throw new Error('接口没有返回模型列表');
+            return [...new Set(models)].sort();
+        }
+
+        function openModelPicker(url, key, onPick) {
+            url = normUrl(url);
+            if (!url) { toastr.warning('请先填写接口 URL'); return; }
+
+            $('#aqs_model_modal').remove();
+            const overlay = $(`
+                <div id="aqs_model_modal">
+                  <div class="aqs-modal-box">
+                    <div class="aqs-modal-head">
+                      <span><i class="fa-solid fa-microchip"></i> 选择模型</span>
+                      <i class="fa-solid fa-xmark aqs-modal-close" title="关闭"></i>
+                    </div>
+                    <input class="text_pole aqs-modal-filter" placeholder="搜索模型…">
+                    <div class="aqs-modal-list">
+                      <div class="aqs-modal-loading"><i class="fa-solid fa-circle-notch fa-spin"></i>&nbsp; 正在获取模型列表…</div>
+                    </div>
+                  </div>
+                </div>`);
+            $('body').append(overlay);
+            const close = () => overlay.remove();
+            overlay.on('pointerdown', (e) => { if (e.target === overlay[0]) close(); });
+            overlay.find('.aqs-modal-close').on('click', close);
+
+            fetchModelList(url, key)
+                .then((models) => {
+                    const list = overlay.find('.aqs-modal-list');
+                    const render = (filter) => {
+                        list.empty();
+                        const f = String(filter || '').toLowerCase();
+                        const subset = models.filter((m) => m.toLowerCase().includes(f));
+                        if (!subset.length) {
+                            list.append($('<div class="aqs-empty">没有匹配的模型</div>'));
+                            return;
+                        }
+                        for (const m of subset) {
+                            $('<div class="aqs-modal-item"></div>').text(m)
+                                .on('click', () => { close(); onPick(m); })
+                                .appendTo(list);
+                        }
+                    };
+                    render('');
+                    overlay.find('.aqs-modal-filter').on('input', function () { render(this.value); }).trigger('focus');
+                    toastr.success('共 ' + models.length + ' 个模型', 'API 快切');
+                })
+                .catch((err) => {
+                    close();
+                    console.error('[API快切] 获取模型失败', err);
+                    toastr.error(String(err && err.message || err), '获取模型失败');
+                });
+        }
+
         /* ---------------- 设置面板：配置卡片 ---------------- */
         function profileCard(p) {
             const active = isActive(p);
             const card = $('<div class="aqs-card"></div>').toggleClass('aqs-active', active);
 
             const head = $('<div class="aqs-card-head"></div>');
+            $('<span class="aqs-dot"></span>').appendTo(head);
             $('<span class="aqs-card-name"></span>').text(p.name).appendTo(head);
             if (active) $('<span class="aqs-badge">当前</span>').appendTo(head);
             card.append(head);
@@ -84,13 +160,24 @@
             $('<div class="aqs-card-url"></div>').text(p.url).appendTo(card);
 
             const meta = $('<div class="aqs-card-meta"></div>');
-            if (p.model) $('<span class="aqs-chip"></span>').text(p.model).appendTo(meta);
+            if (p.model) $('<span class="aqs-chip aqs-chip-model"></span>').text(p.model).appendTo(meta);
             $('<span class="aqs-chip aqs-chip-dim"></span>').text(p.key ? 'Key ✓' : '无 Key').appendTo(meta);
             card.append(meta);
 
             const btns = $('<div class="aqs-card-btns"></div>');
-            $('<button class="menu_button aqs-btn" title="切换到此配置"><i class="fa-solid fa-plug"></i> 使用</button>')
+            $('<button class="menu_button aqs-btn aqs-btn-primary" title="切换到此配置"><i class="fa-solid fa-plug"></i> 使用</button>')
                 .on('click', () => applyProfile(p)).appendTo(btns);
+            $('<button class="menu_button aqs-btn" title="从该接口获取模型列表并选择"><i class="fa-solid fa-microchip"></i></button>')
+                .on('click', () => openModelPicker(p.url, p.key, (m) => {
+                    p.model = m;
+                    save();
+                    renderAll();
+                    if (isActive(p)) {
+                        applyProfile(p);
+                    } else {
+                        toastr.success('已为「' + p.name + '」选择模型：' + m);
+                    }
+                })).appendTo(btns);
             $('<button class="menu_button aqs-btn" title="编辑"><i class="fa-solid fa-pen"></i></button>')
                 .on('click', () => startEdit(p)).appendTo(btns);
             $('<button class="menu_button aqs-btn aqs-danger" title="删除"><i class="fa-solid fa-trash"></i></button>')
@@ -296,7 +383,7 @@
         <div class="aqs-settings">
           <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-              <b><i class="fa-solid fa-shuffle"></i>&nbsp;API 快切</b>
+              <b><i class="fa-solid fa-shuffle aqs-grad-icon"></i>&nbsp;API 快切</b>
               <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
@@ -311,10 +398,13 @@
               <input id="aqs_name" class="text_pole" placeholder="配置名称（如：中转A）">
               <input id="aqs_url" class="text_pole" placeholder="接口地址 URL（如 https://xx.com/v1）">
               <input id="aqs_key" class="text_pole" type="password" placeholder="API 密钥 Key" autocomplete="off">
-              <input id="aqs_model" class="text_pole" placeholder="模型 ID（可选，留空则不改）">
+              <div class="aqs-model-row">
+                <input id="aqs_model" class="text_pole" placeholder="模型 ID（可点右侧按钮获取）">
+                <button id="aqs_fetch_models" class="menu_button aqs-btn" title="从上面填的 URL+Key 获取模型列表"><i class="fa-solid fa-microchip"></i> 获取模型</button>
+              </div>
               <div class="aqs-form-btns">
                 <button id="aqs_fill_current" class="menu_button aqs-btn" title="读取当前连接面板里的 URL 和模型（Key 无法读取，需手填）"><i class="fa-solid fa-rotate"></i> 读取当前</button>
-                <button id="aqs_save" class="menu_button aqs-btn"><i class="fa-solid fa-plus"></i> 保存配置</button>
+                <button id="aqs_save" class="menu_button aqs-btn aqs-btn-primary"><i class="fa-solid fa-plus"></i> 保存配置</button>
                 <button id="aqs_cancel_edit" class="menu_button aqs-btn" style="display:none">取消编辑</button>
               </div>
               <small class="aqs-note">Key 明文存于本机 settings.json，仅建议个人设备使用。快捷入口：输入框旁魔棒菜单 → API 快切，或命令 /apiswitch 配置名</small>
@@ -331,6 +421,11 @@
             $('#aqs_url').val($('#custom_api_url_text').val());
             $('#aqs_model').val($('#custom_model_id').val());
             toastr.info('已填入当前 URL 和模型，Key 需手动填写');
+        });
+        $('#aqs_fetch_models').on('click', () => {
+            const url = normUrl($('#aqs_url').val());
+            const key = String($('#aqs_key').val() || '').trim();
+            openModelPicker(url, key, (m) => $('#aqs_model').val(m));
         });
         $('#aqs_export').on('click', exportProfiles);
         $('#aqs_import').on('click', () => $('#aqs_import_file').trigger('click'));
@@ -349,6 +444,6 @@
         setupSlashCommand();
         renderList();
 
-        console.log('[API快切] 已加载');
+        console.log('[API快切] v1.1.0 已加载');
     });
 })();

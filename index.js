@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '1.3.0';
+    const VERSION = '1.4.0';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -254,11 +254,11 @@
             const wrote = !!key && key !== prevKey;
             if (wrote) await writeKey(key);
             try {
-                const res = await fetch('/api/backends/chat-completions/status', {
+                const res = await fetchTimeout('/api/backends/chat-completions/status', {
                     method: 'POST',
                     headers: ctx.getRequestHeaders(),
                     body: JSON.stringify({ chat_completion_source: 'custom', custom_url: url }),
-                });
+                }, 20000);
                 if (!res.ok) throw new Error('接口返回 HTTP ' + res.status);
                 const json = await res.json();
                 if (json && json.error) throw new Error(json.message || '接口报错');
@@ -292,9 +292,10 @@
                   </div>
                 </div>`);
             $('body').append(overlay);
-            const close = () => overlay.remove();
+            const close = () => { overlay.remove(); $(document).off('keydown.aqsmodal'); };
             overlay.on('pointerdown', (e) => { if (e.target === overlay[0]) close(); });
             overlay.find('.aqs-modal-close').on('click', close);
+            $(document).on('keydown.aqsmodal', (e) => { if (e.key === 'Escape') close(); });
 
             fetchModelList(url, key)
                 .then((models) => {
@@ -377,16 +378,53 @@
             return [...set];
         }
 
-        function refreshGroupDatalist() {
-            const dl = $('#aqs_group_list');
-            if (!dl.length) return;
-            dl.empty();
-            groupNames().forEach((g) => $('<option>').attr('value', g).appendTo(dl));
+        /* ---- 分组选择器：点选已有分组，或切到输入框新建，两种操作分离不打架 ---- */
+        let groupPick = '';
+        let groupTyping = false;
+
+        function currentGroupValue() {
+            return groupTyping ? String($('#aqs_group').val() || '').trim() : groupPick;
+        }
+
+        function setGroupState(pick, typing, typedVal) {
+            groupPick = pick || '';
+            groupTyping = !!typing;
+            const input = $('#aqs_group');
+            if (groupTyping) input.show().val(typedVal || '');
+            else input.hide().val('');
+            renderGroupPicker();
+        }
+
+        function renderGroupPicker() {
+            const box = $('#aqs_group_picker');
+            if (!box.length) return;
+            box.empty();
+            for (const g of groupNames()) {
+                $('<button type="button" class="aqs-gchip"></button>').text(g)
+                    .toggleClass('aqs-gchip-on', !groupTyping && groupPick === g)
+                    .on('click', () => {
+                        if (!groupTyping && groupPick === g) setGroupState('', false);
+                        else setGroupState(g, false);
+                    })
+                    .appendTo(box);
+            }
+            $('<button type="button" class="aqs-gchip aqs-gchip-add"><i class="fa-solid fa-plus"></i>&nbsp;新分组</button>')
+                .toggleClass('aqs-gchip-on', groupTyping)
+                .on('click', () => {
+                    if (groupTyping) { setGroupState('', false); return; }
+                    setGroupState('', true);
+                    setTimeout(() => $('#aqs_group').trigger('focus'), 60);
+                })
+                .appendTo(box);
         }
 
         function renderList() {
             const list = $('#aqs_profile_list').empty();
-            refreshGroupDatalist();
+            const names = groupNames();
+            for (const k of Object.keys(settings.groupCollapsed)) {
+                if (!names.includes(k)) delete settings.groupCollapsed[k];
+            }
+            renderGroupPicker();
             if (!settings.profiles.length) {
                 list.append($('<div class="aqs-empty">还没有站点，在下方添加第一个吧</div>'));
                 return;
@@ -426,15 +464,20 @@
             $('#aqs_url').val(p.url);
             $('#aqs_key').val(p.key || '');
             $('#aqs_model').val(p.model || '');
-            $('#aqs_group').val(p.group || '');
+            if (p.group && groupNames().includes(p.group)) setGroupState(p.group, false);
+            else if (p.group) setGroupState('', true, p.group);
+            else setGroupState('', false);
             $('#aqs_form_title').text('编辑：' + p.name);
             $('#aqs_save').html('<i class="fa-solid fa-floppy-disk"></i> 保存修改');
             $('#aqs_cancel_edit').show();
+            const t = $('#aqs_form_title')[0];
+            if (t && t.scrollIntoView) t.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
 
         function resetForm() {
             editingId = null;
-            $('#aqs_name, #aqs_url, #aqs_key, #aqs_model, #aqs_group').val('');
+            $('#aqs_name, #aqs_url, #aqs_key, #aqs_model').val('');
+            setGroupState('', false);
             $('#aqs_form_title').text('新增站点');
             $('#aqs_save').html('<i class="fa-solid fa-plus"></i> 保存站点');
             $('#aqs_cancel_edit').hide();
@@ -445,7 +488,7 @@
             const url = normUrl($('#aqs_url').val());
             const key = String($('#aqs_key').val() || '').trim();
             const model = String($('#aqs_model').val() || '').trim();
-            const group = String($('#aqs_group').val() || '').trim();
+            const group = currentGroupValue();
 
             if (!name || !url) { toastr.warning('名称和 URL 必填'); return; }
             if (!/^https?:\/\//i.test(url)) { toastr.warning('URL 需要以 http:// 或 https:// 开头'); return; }
@@ -629,8 +672,9 @@
                 <input id="aqs_model" class="text_pole" placeholder="模型 ID（可点右侧按钮获取）">
                 <button id="aqs_fetch_models" class="menu_button aqs-btn" title="从上面填的 URL+Key 获取模型列表"><i class="fa-solid fa-microchip"></i> 获取模型</button>
               </div>
-              <input id="aqs_group" class="text_pole" placeholder="分组（可选，同名自动归为一组，如：Claude 站）" list="aqs_group_list">
-              <datalist id="aqs_group_list"></datalist>
+              <div class="aqs-field-label">分组 · 可选（点选已有分组，或点「新分组」输入）</div>
+              <div id="aqs_group_picker"></div>
+              <input id="aqs_group" class="text_pole" placeholder="输入新分组名称" style="display:none" autocomplete="off">
               <div class="aqs-form-btns">
                 <button id="aqs_fill_current" class="menu_button aqs-btn" title="读取当前连接面板里的 URL 和模型（Key 无法读取，需手填）"><i class="fa-solid fa-rotate"></i> 读取当前</button>
                 <button id="aqs_save" class="menu_button aqs-btn aqs-btn-primary"><i class="fa-solid fa-plus"></i> 保存站点</button>

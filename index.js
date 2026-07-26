@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '2.1.2';
+    const VERSION = '2.1.3';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -63,20 +63,31 @@
                 if (!$('#custom_api_url_text').length) {
                     throw new Error('未找到自定义接口输入框，请确认酒馆版本（需 1.12+）');
                 }
-                await writeKey(p.key);
+                const url = normUrl(p.url);
+                const key = String(p.key || '');
+                if (!url) throw new Error('站点 URL 为空');
+                if (!key) toastr.warning('该站点未保存 API Key，连接可能失败', 'API 快切');
 
+                // 先切源再写 URL/Key，避免源切换时清空
                 $('#main_api').val('openai').trigger('change');
                 $('#chat_completion_source').val('custom').trigger('change');
-                await sleep(150);
+                await sleep(120);
 
-                $('#custom_api_url_text').val(p.url || '').trigger('input');
-                // 关键修复：同步可见密钥输入框。酒馆的“连接”按钮会把该输入框的残留内容
-                // 重新写回密钥库，若不同步，旧 Key 会覆盖刚写入的新 Key（经典切换失效 bug）
-                $('#api_key_custom').val(p.key || '').trigger('input').trigger('change');
-                if (p.model) $('#custom_model_id').val(p.model).trigger('input');
-                await sleep(150);
+                // 密钥库 + 可见框必须同时写，且在点 Connect 前再写一次
+                await writeKey(key);
+                $('#custom_api_url_text').val(url).trigger('input').trigger('change');
+                $('#api_key_custom').val(key).trigger('input').trigger('change');
+                if (p.model) {
+                    $('#custom_model_id').val(p.model).trigger('input').trigger('change');
+                }
+                await sleep(120);
+                // Connect 会回读可见密钥框写回密钥库：再确保一次
+                await writeKey(key);
+                $('#api_key_custom').val(key);
 
-                $('#api_button_openai').trigger('click');
+                const $btn = $('#api_button_openai');
+                if ($btn.length) $btn.trigger('click');
+                else toastr.warning('未找到 Connect 按钮，已写入 URL/Key，请手动点连接');
 
                 toastr.success('已切换到「' + p.name + '」', 'API 快切');
                 renderAll();
@@ -261,32 +272,251 @@
         }
 
         /* ---------------- 模型列表获取 ---------------- */
+        function candidateUrls(url) {
+            const base = normUrl(url);
+            if (!base) return [];
+            const out = [base];
+            // 有人只填域名、有人多写一层 /v1 —— 都试一遍
+            if (/\/v1$/i.test(base)) {
+                const root = base.replace(/\/v1$/i, '');
+                if (root && !out.includes(root)) out.push(root);
+            } else if (!/\/v\d+$/i.test(base)) {
+                const withV1 = base + '/v1';
+                if (!out.includes(withV1)) out.push(withV1);
+            }
+            return out;
+        }
+
+        function extractModels(json) {
+            if (!json) return [];
+            let arr = [];
+            if (Array.isArray(json)) arr = json;
+            else if (Array.isArray(json.data)) arr = json.data;
+            else if (json.data && Array.isArray(json.data.data)) arr = json.data.data;
+            else if (Array.isArray(json.models)) arr = json.models;
+            else if (json.data && Array.isArray(json.data.models)) arr = json.data.models;
+            return arr
+                .map((m) => (typeof m === 'string' ? m : (m && (m.id || m.model || m.name))))
+                .filter(Boolean)
+                .map(String);
+        }
+
+        function errMsgFromJson(json, fallback) {
+            if (!json) return fallback || '未知错误';
+            if (typeof json.error === 'string' && json.error && json.error !== 'true') return json.error;
+            if (json.error && typeof json.error === 'object') {
+                const m = json.error.message || json.error.msg || json.error.code;
+                if (m) return String(m);
+            }
+            if (json.message) return String(json.message);
+            if (json.error_message) return String(json.error_message);
+            if (json.error === true) return fallback || '上游接口报错（常见：Key 无效、URL 不对、或酒馆服务器 IP 被拦）';
+            return fallback || '未知错误';
+        }
+
+        function humanizeFetchErr(msg) {
+            const s = String(msg || '');
+            if (/未填写 API Key/.test(s)) return s;
+            if (/401|Unauthorized|invalid.?api.?key|incorrect.?api.?key|authentication/i.test(s)) {
+                return '密钥无效或无权限（401）。请确认该站点自己的 API Key 已填对';
+            }
+            if (/403|Forbidden/i.test(s)) {
+                return '被拒绝访问（403）。可能是 Key 权限不足，或站点拦了当前网络';
+            }
+            if (/Failed to fetch|NetworkError|CORS|blocked by CORS|Load failed/i.test(s)) {
+                return '浏览器直连被拦（CORS/网络）。将自动改走酒馆服务器代理；若仍失败，多半是该站点拦了酒馆服务器 IP';
+            }
+            if (/timeout|aborted|AbortError/i.test(s)) {
+                return '请求超时。站点太慢或当前网络访问不到该域名';
+            }
+            if (/接口报错|上游 \/models 失败|error\s*:\s*true/i.test(s)) {
+                return '上游 /models 失败。常见原因：Key 不对、URL 多/少了 /v1、或酒馆服务器 IP 被中转站拦截';
+            }
+            return s;
+        }
+
+        function resolveFetchKey(url, key) {
+            let k = String(key || '').trim();
+            if (k) return k;
+            const formKey = String($('#aqs_key').val() || '').trim();
+            if (formKey) return formKey;
+            const u = normUrl(url);
+            // 同 URL 的已保存站点（编辑时密码框有时是空的，别误用当前连接的 Key）
+            const byUrl = settings.profiles.find((p) => normUrl(p.url) === u && String(p.key || '').trim());
+            if (byUrl) return String(byUrl.key || '').trim();
+            // 再退回当前连接站点
+            const active = settings.profiles.find(isActive);
+            return active ? String(active.key || '').trim() : '';
+        }
+
+        function modelEndpoints(baseUrl) {
+            const u = normUrl(baseUrl);
+            if (!u) return [];
+            const eps = [];
+            // OpenAI 兼容：base 通常以 /v1 结尾，只拼 /models
+            eps.push(u + '/models');
+            if (!/\/v\d+$/i.test(u)) eps.push(u + '/v1/models');
+            // 少数网关挂在根路径
+            if (/\/v1$/i.test(u)) eps.push(u.replace(/\/v1$/i, '') + '/models');
+            return [...new Set(eps)];
+        }
+
+        async function fetchModelsDirect(url, key) {
+            // 浏览器直连：走手机/本机网络，避开「酒馆服务器 IP 被中转站墙」
+            let lastErr = '';
+            for (const ep of modelEndpoints(url)) {
+                try {
+                    const res = await fetchTimeout(ep, {
+                        method: 'GET',
+                        headers: {
+                            'Authorization': 'Bearer ' + (key || ''),
+                            'Accept': 'application/json',
+                        },
+                        mode: 'cors',
+                        cache: 'no-store',
+                    }, 20000);
+                    const text = await res.text();
+                    let json = null;
+                    try { json = text ? JSON.parse(text) : null; } catch { /* ignore */ }
+                    if (!res.ok) {
+                        lastErr = errMsgFromJson(json, 'HTTP ' + res.status) + ' @ ' + ep;
+                        continue;
+                    }
+                    const models = extractModels(json);
+                    if (models.length) return models;
+                    lastErr = '空列表 @ ' + ep;
+                } catch (e) {
+                    lastErr = String(e && e.message || e) + ' @ ' + ep;
+                }
+            }
+            throw new Error(lastErr || '浏览器直连失败');
+        }
+
+        async function fetchModelsViaProxy(url) {
+            const res = await fetchTimeout('/api/backends/chat-completions/status', {
+                method: 'POST',
+                headers: ctx.getRequestHeaders(),
+                body: JSON.stringify({
+                    chat_completion_source: 'custom',
+                    custom_url: url,
+                }),
+            }, 25000);
+            const text = await res.text();
+            let json = null;
+            try { json = text ? JSON.parse(text) : null; } catch { /* ignore */ }
+            if (!res.ok) {
+                throw new Error(errMsgFromJson(json, text || ('HTTP ' + res.status)).slice(0, 200));
+            }
+            const models = extractModels(json);
+            if (models.length) return models;
+            // 酒馆在上游失败时仍可能 200 + {error:true, data:{data:[]}}
+            if (json && json.error) {
+                throw new Error(errMsgFromJson(json, '上游 /models 失败'));
+            }
+            throw new Error('接口没有返回模型列表');
+        }
+
         async function fetchModelList(url, key) {
-            // 拉模型需要临时把该站点的 Key 写进密钥库；结束后必须还原当前连接的 Key，
-            // 否则给未连接的站点拉模型会污染正在使用的连接（重连时报密钥错误）
-            // 刷新页面后密钥输入框是空的（Key 只在密钥库里），此时用"当前连接对应
-            // 的已保存站点"的 Key 兜底，保证总有值可还原
+            // 拉模型：优先浏览器直连（与手机网络一致），失败再走酒馆代理
+            // 写密钥库仅服务代理路径；结束后还原，避免污染当前连接
             const activeProfile = settings.profiles.find(isActive);
-            const prevKey = String($('#api_key_custom').val() || '') || (activeProfile ? String(activeProfile.key || '') : '');
-            const wrote = !!key && key !== prevKey;
-            if (wrote) await writeKey(key);
+            const prevKey = String($('#api_key_custom').val() || '').trim()
+                || (activeProfile ? String(activeProfile.key || '').trim() : '');
+            const useKey = resolveFetchKey(url, key);
+            if (!useKey) throw new Error('未填写 API Key，无法获取模型');
+
+            const urls = candidateUrls(url);
+            let lastErr = '';
+            let wroteProxyKey = false;
+
             try {
-                const res = await fetchTimeout('/api/backends/chat-completions/status', {
-                    method: 'POST',
-                    headers: ctx.getRequestHeaders(),
-                    body: JSON.stringify({ chat_completion_source: 'custom', custom_url: url }),
-                }, 20000);
-                if (!res.ok) throw new Error('接口返回 HTTP ' + res.status);
-                const json = await res.json();
-                if (json && json.error) throw new Error(json.message || '接口报错');
-                const arr = Array.isArray(json) ? json : (json.data || json.models || []);
-                const models = arr
-                    .map((m) => (typeof m === 'string' ? m : (m.id || m.model || m.name)))
-                    .filter(Boolean);
-                if (!models.length) throw new Error('接口没有返回模型列表');
-                return [...new Set(models)].sort();
+                // 1) 浏览器直连
+                for (const u of urls) {
+                    try {
+                        const models = await fetchModelsDirect(u, useKey);
+                        return [...new Set(models)].sort((a, b) => a.localeCompare(b));
+                    } catch (e) {
+                        lastErr = String(e && e.message || e);
+                    }
+                }
+
+                // 2) 酒馆服务端代理（需要把目标 Key 临时写入密钥库）
+                await writeKey(useKey);
+                wroteProxyKey = true;
+                $('#api_key_custom').val(useKey);
+                await sleep(250);
+                for (const u of urls) {
+                    try {
+                        const models = await fetchModelsViaProxy(u);
+                        return [...new Set(models)].sort((a, b) => a.localeCompare(b));
+                    } catch (e) {
+                        lastErr = String(e && e.message || e);
+                    }
+                }
+                throw new Error(humanizeFetchErr(lastErr || '获取模型失败'));
             } finally {
-                if (wrote && prevKey) writeKey(prevKey).catch(() => {});
+                // 只要写过密钥库，就尽量还原到「当前连接站点」的 Key，避免污染
+                if (wroteProxyKey) {
+                    const restore = (activeProfile && String(activeProfile.key || '').trim()) || prevKey;
+                    if (restore && restore !== useKey) {
+                        writeKey(restore).then(() => {
+                            if (String($('#api_key_custom').val() || '') === useKey) {
+                                $('#api_key_custom').val(restore);
+                            }
+                        }).catch(() => {});
+                    }
+                }
+            }
+        }
+
+        function layoutModelModal(root) {
+            const el = root && root.nodeType ? root : (root && root[0]) || null;
+            if (!el) return;
+            const box = el.querySelector('.aqs-modal-box');
+            if (!box) return;
+            const vv = window.visualViewport;
+            const vh = Math.round(
+                (vv && vv.height) ||
+                window.innerHeight ||
+                document.documentElement.clientHeight ||
+                640
+            );
+            const vw = Math.round(
+                (vv && vv.width) ||
+                window.innerWidth ||
+                document.documentElement.clientWidth ||
+                360
+            );
+            // 强制居中，覆盖任何把弹层贴顶/贴底的旧 CSS
+            el.style.setProperty('display', 'flex', 'important');
+            el.style.setProperty('align-items', 'center', 'important');
+            el.style.setProperty('justify-content', 'center', 'important');
+            el.style.setProperty('padding', '10px', 'important');
+            // 像素锁死高度：禁止 height:100% / clamp(...100%) 在部分 WebView 塌成一条缝
+            const h = Math.max(380, Math.min(Math.round(vh * 0.9), vh - 20));
+            const w = Math.max(280, Math.min(440, vw - 20));
+            box.style.setProperty('height', h + 'px', 'important');
+            box.style.setProperty('max-height', h + 'px', 'important');
+            box.style.setProperty('min-height', h + 'px', 'important');
+            box.style.setProperty('width', w + 'px', 'important');
+            box.style.setProperty('max-width', w + 'px', 'important');
+            box.style.setProperty('margin', 'auto', 'important');
+            box.style.setProperty('flex', '0 0 auto', 'important');
+            box.style.setProperty('display', 'flex', 'important');
+            box.style.setProperty('flex-direction', 'column', 'important');
+            box.style.setProperty('box-sizing', 'border-box', 'important');
+            const list = box.querySelector('.aqs-modal-list');
+            if (list) {
+                const head = box.querySelector('.aqs-modal-head');
+                const filter = box.querySelector('.aqs-modal-filter');
+                const used = (head ? head.offsetHeight : 48) + (filter ? filter.offsetHeight : 44) + 48;
+                const lh = Math.max(240, h - used);
+                list.style.setProperty('height', lh + 'px', 'important');
+                list.style.setProperty('max-height', lh + 'px', 'important');
+                list.style.setProperty('min-height', lh + 'px', 'important');
+                list.style.setProperty('flex', '1 1 auto', 'important');
+                list.style.setProperty('overflow-y', 'auto', 'important');
+                list.style.setProperty('-webkit-overflow-scrolling', 'touch', 'important');
             }
         }
 
@@ -309,11 +539,25 @@
                   </div>
                 </div>`);
             $('body').append(overlay);
+            // 双 rAF + 短延迟，等 DOM/字体布局稳定后再量高度
+            requestAnimationFrame(() => {
+                layoutModelModal(overlay[0]);
+                requestAnimationFrame(() => layoutModelModal(overlay[0]));
+            });
+            setTimeout(() => layoutModelModal(overlay[0]), 50);
+            const onResize = () => layoutModelModal(overlay[0]);
+            window.addEventListener('resize', onResize);
+            window.addEventListener('orientationchange', onResize);
+            if (window.visualViewport) window.visualViewport.addEventListener('resize', onResize);
+
             const prevOverflow = document.body.style.overflow;
             const prevTouch = document.body.style.touchAction;
             const close = () => {
                 document.body.style.overflow = prevOverflow;
                 document.body.style.touchAction = prevTouch;
+                window.removeEventListener('resize', onResize);
+                window.removeEventListener('orientationchange', onResize);
+                if (window.visualViewport) window.visualViewport.removeEventListener('resize', onResize);
                 overlay.remove();
                 $(document).off('keydown.aqsmodal');
             };
@@ -330,32 +574,53 @@
             overlay.find('.aqs-modal-close').on('click', close);
             $(document).on('keydown.aqsmodal', (e) => { if (e.key === 'Escape') close(); });
 
-            fetchModelList(url, key)
-                .then((models) => {
-                    const list = overlay.find('.aqs-modal-list');
-                    const render = (filter) => {
-                        list.empty();
-                        const f = String(filter || '').toLowerCase();
-                        const subset = models.filter((m) => m.toLowerCase().includes(f));
-                        if (!subset.length) {
-                            list.append($('<div class="aqs-empty">没有匹配的模型</div>'));
-                            return;
-                        }
-                        for (const m of subset) {
-                            $('<div class="aqs-modal-item"></div>').text(m)
-                                .on('click', () => { close(); onPick(m); })
-                                .appendTo(list);
-                        }
-                    };
-                    render('');
-                    overlay.find('.aqs-modal-filter').on('input', function () { render(this.value); }).trigger('focus');
-                    toastr.success('共 ' + models.length + ' 个模型', 'API 快切');
-                })
-                .catch((err) => {
-                    close();
-                    console.error('[API快切] 获取模型失败', err);
-                    toastr.error(String(err && err.message || err), '获取模型失败');
-                });
+            const list = overlay.find('.aqs-modal-list');
+            const showError = (msg) => {
+                list.empty();
+                const box = $('<div class="aqs-empty aqs-modal-error"></div>');
+                box.append($('<div></div>').text(String(msg || '获取失败')));
+                $('<button type="button" class="menu_button aqs-btn aqs-btn-primary" style="margin-top:12px;">重试</button>')
+                    .on('click', () => {
+                        list.html('<div class="aqs-modal-loading"><i class="fa-solid fa-circle-notch fa-spin"></i>&nbsp; SCANNING…</div>');
+                        layoutModelModal(overlay[0]);
+                        doFetch();
+                    })
+                    .appendTo(box);
+                list.append(box);
+                layoutModelModal(overlay[0]);
+            };
+
+            const doFetch = () => {
+                fetchModelList(url, key)
+                    .then((models) => {
+                        const render = (filter) => {
+                            list.empty();
+                            const f = String(filter || '').toLowerCase();
+                            const subset = models.filter((m) => m.toLowerCase().includes(f));
+                            if (!subset.length) {
+                                list.append($('<div class="aqs-empty">没有匹配的模型</div>'));
+                                layoutModelModal(overlay[0]);
+                                return;
+                            }
+                            for (const m of subset) {
+                                $('<div class="aqs-modal-item"></div>').text(m)
+                                    .on('click', () => { close(); onPick(m); })
+                                    .appendTo(list);
+                            }
+                            layoutModelModal(overlay[0]);
+                        };
+                        render('');
+                        overlay.find('.aqs-modal-filter').off('input.aqs').on('input.aqs', function () { render(this.value); });
+                        toastr.success('共 ' + models.length + ' 个模型', 'API 快切');
+                    })
+                    .catch((err) => {
+                        console.error('[API快切] 获取模型失败', err);
+                        const msg = humanizeFetchErr(String(err && err.message || err));
+                        toastr.error(msg, '获取模型失败');
+                        showError(msg);
+                    });
+            };
+            doFetch();
         }
 
         /* ---------------- 设置面板：配置卡片 ---------------- */

@@ -832,42 +832,48 @@
 /* ---- 模型选择弹窗 ---- */
 
 #aqs_model_modal {
-    position: fixed;
-    inset: 0;
-    z-index: 99999;
+    position: fixed !important;
+    inset: 0 !important;
+    z-index: 99999 !important;
     background: rgb(2 4 10 / 72%);
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: max(12px, env(safe-area-inset-top, 0px)) 12px max(12px, env(safe-area-inset-bottom, 0px));
-    box-sizing: border-box;
-    overflow: hidden;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 12px !important;
+    padding-top: max(12px, env(safe-area-inset-top, 0px)) !important;
+    padding-bottom: max(12px, env(safe-area-inset-bottom, 0px)) !important;
+    box-sizing: border-box !important;
+    overflow: hidden !important;
     animation: aqs-in 0.16s ease;
 }
 
 .aqs-modal-box {
-    width: min(440px, calc(100vw - 24px));
-    max-height: min(78vh, 680px);
-    max-height: min(78dvh, 680px);
-    height: min(78vh, 680px);
-    height: min(78dvh, 680px);
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
+    width: min(440px, calc(100vw - 24px)) !important;
+    max-width: calc(100vw - 24px) !important;
+    /* 默认高度用 clamp；JS 会再用像素覆盖，避免 WebView vh 塌缩 */
+    height: 78vh !important;
+    height: 78dvh !important;
+    max-height: min(680px, calc(100vh - 24px)) !important;
+    max-height: min(680px, calc(100dvh - 24px)) !important;
+    min-height: 360px !important;
+    display: flex !important;
+    flex-direction: column !important;
+    min-width: 0;
     flex-shrink: 0;
-    margin: 0 auto;
+    margin: auto !important;
     border: 1px solid var(--aqs-line-hi);
-    border-radius: 19px;
+    border-radius: 19px !important;
     background: var(--aqs-glass), #0f1522;
-    background-color: #0f1522;
+    background-color: #0f1522 !important;
     box-shadow: inset 0 1px 0 rgb(255 255 255 / 7%), 0 22px 60px rgb(0 0 0 / 60%), var(--aqs-glow);
     padding: 15px;
     position: relative;
-    overflow: hidden;
+    overflow: hidden !important;
     color: var(--aqs-fg) !important;
     -webkit-text-fill-color: var(--aqs-fg);
+    box-sizing: border-box !important;
 }
 
 .aqs-modal-box::before {
@@ -932,10 +938,12 @@
 }
 
 .aqs-modal-list {
-    overflow-y: auto;
-    overflow-x: hidden;
-    flex: 1 1 auto;
-    min-height: 120px;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    flex: 1 1 auto !important;
+    min-height: 260px !important;
+    height: auto !important;
+    max-height: none !important;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
     touch-action: pan-y;
@@ -951,6 +959,13 @@
     opacity: 1 !important;
     font-family: var(--aqs-mono);
     letter-spacing: 0.12em;
+}
+
+.aqs-modal-error {
+    padding: 18px 8px !important;
+    white-space: normal !important;
+    line-height: 1.45;
+    text-align: center;
 }
 
 .aqs-modal-item {
@@ -1101,36 +1116,33 @@
 }
 
 @media (max-width: 480px) {
-    /* 手机：模型选择改底部大抽屉，保证完整可见可滑 */
     #aqs_model_modal {
-        align-items: flex-end !important;
+        align-items: center !important;
         justify-content: center !important;
-        padding: 0 !important;
-        overflow: hidden !important;
+        padding: 10px !important;
     }
 
     #aqs_model_modal .aqs-modal-box {
-        width: 100% !important;
-        max-width: 100% !important;
-        height: min(88vh, 100%) !important;
-        height: min(88dvh, 100%) !important;
-        max-height: min(88vh, 100%) !important;
-        max-height: min(88dvh, 100%) !important;
-        margin: 0 !important;
-        border-radius: 18px 18px 0 0 !important;
-        border-left: none;
-        border-right: none;
-        border-bottom: none;
-        padding: 12px 14px calc(14px + env(safe-area-inset-bottom, 0px));
-        animation: aqs-sheet-up 0.22s var(--aqs-ease);
+        width: calc(100vw - 20px) !important;
+        max-width: calc(100vw - 20px) !important;
+        /* 禁止用 100% 当高度上限：部分 WebView 会把它算成父级内容高度导致只剩一条缝 */
+        height: 90vh !important;
+        height: 90dvh !important;
+        max-height: 90vh !important;
+        max-height: 90dvh !important;
+        min-height: 380px !important;
+        margin: auto !important;
+        border-radius: 16px !important;
+        border: 1px solid var(--aqs-line-hi) !important;
+        padding: 12px 14px !important;
         display: flex !important;
         flex-direction: column !important;
+        flex: 0 0 auto !important;
     }
 
     #aqs_model_modal .aqs-modal-list {
         flex: 1 1 auto !important;
-        min-height: 0 !important;
-        max-height: none !important;
+        min-height: 240px !important;
         overflow-y: auto !important;
         -webkit-overflow-scrolling: touch;
     }
@@ -1152,40 +1164,6 @@
         max-height: min(48vh, 420px);
     }
 }
-
-@keyframes aqs-sheet-up {
-    from { opacity: 0; transform: translateY(18px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-
-/* 中等高度手机横屏 / 矮屏：弹层仍贴底并占更大高度 */
-@media (max-width: 900px) and (max-height: 520px) {
-    #aqs_model_modal {
-        align-items: flex-end;
-        padding: 0;
-    }
-    #aqs_model_modal .aqs-modal-box {
-        width: 100%;
-        max-width: 100%;
-        height: 94vh;
-        height: 94dvh;
-        max-height: 94vh;
-        max-height: 94dvh;
-        border-radius: 14px 14px 0 0;
-        margin: 0;
-    }
-}
-
-/* 矮屏手机：再抬高可用高度 */
-@media (max-width: 480px) and (max-height: 720px) {
-    #aqs_model_modal .aqs-modal-box {
-        max-height: 92vh;
-        max-height: 92dvh;
-        height: 92vh;
-        height: 92dvh;
-    }
-}
-
 
 /* 最后防线：强制插件自绘区文字在浅色主题下可读 */
 #aqs_api_embed,

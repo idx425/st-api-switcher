@@ -1,0 +1,11 @@
+{
+    "display_name": "API 快切 (API Switcher)",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "ysnbysnb",
+    "version": "1.0.0",
+    "homePage": "https://github.com/idx425/st-api-switcher"
+}

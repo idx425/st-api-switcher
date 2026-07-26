@@ -1,0 +1,194 @@
+/* ===== API 快切 · 设置面板 ===== */
+
+.aqs-settings .aqs-hr {
+    margin: 10px 0;
+    opacity: 0.4;
+}
+
+.aqs-card {
+    border: 1px solid var(--SmartThemeBorderColor, #8884);
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin: 8px 0;
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor, #0000) 40%, transparent);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.aqs-card:hover {
+    box-shadow: 0 2px 8px rgb(0 0 0 / 20%);
+}
+
+.aqs-card.aqs-active {
+    border-color: var(--SmartThemeQuoteColor, #7c9);
+    box-shadow: 0 0 0 1px var(--SmartThemeQuoteColor, #7c9) inset;
+}
+
+.aqs-card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.aqs-card-name {
+    font-weight: 600;
+    font-size: 1.02em;
+}
+
+.aqs-badge {
+    font-size: 0.72em;
+    line-height: 1;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: var(--SmartThemeQuoteColor, #7c9);
+    color: var(--SmartThemeBlurTintColor, #123);
+    font-weight: 700;
+}
+
+.aqs-card-url {
+    font-size: 0.82em;
+    opacity: 0.7;
+    margin-top: 3px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: left;
+}
+
+.aqs-card-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.aqs-chip {
+    font-size: 0.75em;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--SmartThemeBorderColor, #8884);
+    opacity: 0.9;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.aqs-chip-dim {
+    opacity: 0.55;
+}
+
+.aqs-card-btns {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.aqs-btn {
+    padding: 4px 10px;
+    font-size: 0.88em;
+}
+
+.aqs-danger:hover {
+    color: #e66;
+}
+
+.aqs-empty {
+    opacity: 0.55;
+    padding: 10px 4px;
+    text-align: center;
+}
+
+.aqs-io-btns {
+    display: flex;
+    gap: 8px;
+    margin-top: 6px;
+}
+
+.aqs-form-title {
+    font-weight: 600;
+    margin: 4px 0 2px;
+    opacity: 0.85;
+}
+
+.aqs-settings .text_pole {
+    margin-top: 6px;
+    width: 100%;
+}
+
+.aqs-form-btns {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.aqs-note {
+    display: block;
+    margin-top: 8px;
+    opacity: 0.55;
+    line-height: 1.5;
+}
+
+/* ===== 快捷面板（魔棒菜单弹出） ===== */
+
+#aqs_quick_panel {
+    position: fixed;
+    bottom: 90px;
+    left: 10px;
+    z-index: 30000;
+    min-width: 230px;
+    max-width: min(320px, calc(100vw - 20px));
+    max-height: 50vh;
+    overflow-y: auto;
+    border: 1px solid var(--SmartThemeBorderColor, #8884);
+    border-radius: 12px;
+    background: var(--SmartThemeBlurTintColor, #1a1a1a);
+    backdrop-filter: blur(var(--SmartThemeBlurStrength, 10px));
+    box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
+    padding: 8px;
+}
+
+.aqs-qp-title {
+    font-weight: 700;
+    padding: 4px 8px 8px;
+    opacity: 0.85;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, #8884);
+    margin-bottom: 6px;
+}
+
+.aqs-qp-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.12s ease;
+}
+
+.aqs-qp-item:hover {
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor, #7c9) 18%, transparent);
+}
+
+.aqs-qp-item.aqs-active {
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor, #7c9) 28%, transparent);
+    font-weight: 600;
+}
+
+.aqs-qp-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.aqs-qp-model {
+    font-size: 0.75em;
+    opacity: 0.6;
+    flex-shrink: 0;
+    max-width: 40%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

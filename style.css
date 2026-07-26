@@ -574,6 +574,9 @@
     max-width: min(340px, calc(100vw - 20px));
     max-height: 55vh;
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
     border: 1px solid var(--aqs-line);
     border-radius: 17px;
     background: var(--aqs-glass), rgb(10 14 22 / 80%);
@@ -699,9 +702,11 @@
 
 .aqs-modal-box {
     width: min(440px, calc(100vw - 32px));
-    max-height: 72vh;
+    max-height: min(72vh, 640px);
+    height: min(72vh, 640px);
     display: flex;
     flex-direction: column;
+    min-height: 0;
     border: 1px solid var(--aqs-line-hi);
     border-radius: 19px;
     background: var(--aqs-glass), rgb(11 15 24 / 92%);
@@ -764,8 +769,12 @@
 
 .aqs-modal-list {
     overflow-y: auto;
-    flex: 1;
-    min-height: 120px;
+    overflow-x: hidden;
+    flex: 1 1 auto;
+    min-height: 0;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
     counter-reset: aqsm;
 }
 
@@ -817,4 +826,120 @@
 .aqs-modal-list::-webkit-scrollbar-thumb {
     background: rgb(34 211 238 / 26%);
     border-radius: 3px;
+}
+
+
+/* ---- 插头 / API 抽屉内嵌主界面 ---- */
+
+#aqs_api_embed,
+.aqs-api-embed {
+    --aqs-c1: #22d3ee;
+    --aqs-c2: #818cf8;
+    --aqs-grad: linear-gradient(120deg, var(--aqs-c1), var(--aqs-c2));
+    --aqs-glass: linear-gradient(165deg, rgb(255 255 255 / 4.5%), rgb(255 255 255 / 1.2%));
+    --aqs-panel: rgb(10 14 22 / 62%);
+    --aqs-line: rgb(255 255 255 / 7%);
+    --aqs-line-hi: rgb(255 255 255 / 15%);
+    --aqs-mono: var(--monoFontFamily, 'SF Mono', 'Consolas', 'JetBrains Mono', monospace);
+    --aqs-ease: cubic-bezier(0.22, 0.8, 0.3, 1);
+    margin: 10px 0 14px;
+    border: 1px solid var(--aqs-line);
+    border-radius: 16px;
+    background: var(--aqs-glass), var(--aqs-panel);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 5%), 0 8px 24px rgb(0 0 0 / 22%);
+    overflow: hidden;
+    position: relative;
+}
+
+#aqs_api_embed::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 16px;
+    right: 16px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgb(34 211 238 / 55%), rgb(129 140 248 / 55%), transparent);
+}
+
+.aqs-api-embed-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 12px 13px 8px;
+}
+
+.aqs-api-embed-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    min-width: 0;
+}
+
+.aqs-api-embed-ver {
+    font-family: var(--aqs-mono);
+    font-size: 0.72em;
+    opacity: 0.5;
+    letter-spacing: 0.08em;
+}
+
+.aqs-api-embed-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.aqs-api-embed-body {
+    max-height: min(42vh, 360px);
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+    padding: 4px 8px 8px;
+}
+
+.aqs-api-embed-foot {
+    padding: 0 13px 11px;
+    opacity: 0.7;
+}
+
+#aqs_api_embed.aqs-collapsed .aqs-api-embed-body,
+#aqs_api_embed.aqs-collapsed .aqs-api-embed-foot {
+    display: none;
+}
+
+#aqs_api_embed .aqs-qp-item {
+    padding: 10px 12px;
+}
+
+#aqs_api_embed .aqs-qp-group {
+    padding-top: 10px;
+}
+
+@media (pointer: coarse) {
+    #aqs_api_embed .aqs-qp-item {
+        padding: 13px 14px;
+        min-height: 44px;
+    }
+    #aqs_api_embed .menu_button {
+        min-width: 40px;
+        min-height: 40px;
+    }
+}
+
+@media (max-width: 480px) {
+    #aqs_model_modal .aqs-modal-box {
+        width: calc(100vw - 16px);
+        max-height: 78vh;
+        height: 78vh;
+        border-radius: 16px;
+    }
+    #aqs_quick_panel {
+        max-width: calc(100vw - 12px);
+        left: 6px !important;
+    }
 }

@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '2.0.0';
+    const VERSION = '2.1.1';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -309,13 +309,24 @@
                   </div>
                 </div>`);
             $('body').append(overlay);
-            const close = () => { overlay.remove(); $(document).off('keydown.aqsmodal'); };
+            const prevOverflow = document.body.style.overflow;
+            const prevTouch = document.body.style.touchAction;
+            const close = () => {
+                document.body.style.overflow = prevOverflow;
+                document.body.style.touchAction = prevTouch;
+                overlay.remove();
+                $(document).off('keydown.aqsmodal');
+            };
+            document.body.style.overflow = 'hidden';
+            document.body.style.touchAction = 'none';
             // 弹窗挂在 body 上，点击事件若冒泡到 document，酒馆会判定"点击了面板外部"
             // 而关闭整个扩展设置面板，导致选完模型被踢回主界面 —— 全部拦截
-            overlay.on('pointerdown pointerup mousedown mouseup click touchstart touchend', (e) => {
+            overlay.on('pointerdown pointerup mousedown mouseup click touchstart touchend wheel', (e) => {
                 e.stopPropagation();
-                if (e.type === 'pointerdown' && e.target === overlay[0]) close();
+                if ((e.type === 'pointerdown' || e.type === 'mousedown' || e.type === 'touchstart') && e.target === overlay[0]) close();
             });
+            // 列表内部允许滚动，外层不滚动页面
+            overlay.find('.aqs-modal-list').on('touchmove wheel', (e) => e.stopPropagation());
             overlay.find('.aqs-modal-close').on('click', close);
             $(document).on('keydown.aqsmodal', (e) => { if (e.key === 'Escape') close(); });
 
@@ -474,10 +485,7 @@
             }
         }
 
-        function renderAll() {
-            renderList();
-            if ($('#aqs_quick_panel').is(':visible')) renderQuickPanel();
-        }
+        /* renderAll 在快捷面板段重定义，同步刷新嵌入面板 */
 
         /* ---------------- 表单 ---------------- */
         function startEdit(p) {
@@ -583,165 +591,312 @@
             reader.readAsText(file);
         }
 
-        /* ---------------- 快捷面板（魔棒菜单） ---------------- */
-        function renderQuickPanel() {
-            const panel = $('#aqs_quick_panel').empty();
-            $('<div class="aqs-qp-title"><i class="fa-solid fa-shuffle"></i> API·SWITCH</div>').appendTo(panel);
+        /* ---------------- 快捷面板 / 插头嵌入 ---------------- */
+        function buildProfileItems($root, { closeOnClick } = {}) {
+            $root.empty();
             if (!settings.profiles.length) {
-                $('<div class="aqs-empty">先去扩展设置里添加站点</div>').appendTo(panel);
+                $root.append($('<div class="aqs-empty">先去扩展设置里添加站点</div>'));
                 return;
             }
             const addItem = (p) => {
                 const item = $('<div class="aqs-qp-item"></div>').toggleClass('aqs-active', isActive(p));
                 $('<span class="aqs-qp-name"></span>').text(p.name).appendTo(item);
                 if (p.model) $('<span class="aqs-qp-model"></span>').text(p.model).appendTo(item);
-                item.on('click', async () => {
-                    $('#aqs_quick_panel').hide();
+                item.on('click', async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (closeOnClick) $('#aqs_quick_panel').hide();
                     await applyProfile(p);
+                    renderAll();
                 });
-                panel.append(item);
+                $root.append(item);
             };
             settings.profiles.filter((p) => !p.group).forEach(addItem);
             for (const g of groupNames()) {
-                $('<div class="aqs-qp-group"></div>').text(g).appendTo(panel);
+                $('<div class="aqs-qp-group"></div>').text(g).appendTo($root);
                 settings.profiles.filter((p) => p.group === g).forEach(addItem);
             }
         }
 
-        function setupQuickPanel() {
-            $('<div id="aqs_quick_panel"></div>').hide().appendTo('body');
+        function renderQuickPanel() {
+            const panel = $('#aqs_quick_panel');
+            if (!panel.length) return;
+            buildProfileItems(panel, { closeOnClick: true });
+            panel.prepend($('<div class="aqs-qp-title"><i class="fa-solid fa-shuffle"></i> API·SWITCH</div>'));
+        }
 
-            const menuItem = $(
-                '<div id="aqs_wand_item" class="list-group-item flex-container flexGap5 interactable" tabindex="0">' +
-                '<i class="fa-solid fa-shuffle"></i><span>API 快切</span></div>'
-            );
-            $('#extensionsMenu').append(menuItem);
-            menuItem.on('click', () => {
+        function renderApiEmbed() {
+            const body = $('#aqs_api_embed_body');
+            if (!body.length) return;
+            buildProfileItems(body, { closeOnClick: false });
+            const n = settings.profiles.length;
+            $('#aqs_api_embed_count').text(n ? (n + ' 站') : '空');
+        }
+
+        function ensureApiEmbed() {
+            if ($('#aqs_api_embed').length) return true;
+            const host = $('#rm_api_block');
+            if (!host.length) return false;
+
+            const box = $(`
+                <div id="aqs_api_embed" class="aqs-api-embed">
+                    <div class="aqs-api-embed-head">
+                        <div class="aqs-api-embed-title">
+                            <i class="fa-solid fa-shuffle aqs-grad-icon"></i>
+                            <span>API 快切</span>
+                            <span class="aqs-api-embed-ver">v${VERSION}</span>
+                        </div>
+                        <div class="aqs-api-embed-actions">
+                            <span id="aqs_api_embed_count" class="aqs-chip aqs-chip-dim">空</span>
+                            <div id="aqs_api_embed_refresh" class="menu_button menu_button_icon aqs-btn" title="刷新列表">
+                                <i class="fa-solid fa-rotate"></i>
+                            </div>
+                            <div id="aqs_api_embed_toggle" class="menu_button menu_button_icon aqs-btn" title="展开/收起">
+                                <i class="fa-solid fa-chevron-up"></i>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="aqs_api_embed_body" class="aqs-api-embed-body"></div>
+                    <div class="aqs-api-embed-foot">
+                        <span class="aqs-note" style="margin:0">点站点即可切换 · 完整管理在「扩展」面板</span>
+                    </div>
+                </div>
+            `);
+
+            // 插到 API 抽屉标题下方，作为主入口
+            const title = host.children('h3').first();
+            if (title.length) title.after(box);
+            else host.prepend(box);
+
+            $('#aqs_api_embed_refresh').on('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                renderApiEmbed();
+                toastr.info('已刷新站点列表', 'API 快切');
+            });
+            $('#aqs_api_embed_toggle').on('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const collapsed = $('#aqs_api_embed').toggleClass('aqs-collapsed').hasClass('aqs-collapsed');
+                $('#aqs_api_embed_toggle i')
+                    .toggleClass('fa-chevron-up', !collapsed)
+                    .toggleClass('fa-chevron-down', collapsed);
+            });
+
+            renderApiEmbed();
+            return true;
+        }
+
+        function findExtensionsMenu() {
+            const candidates = [
+                '#extensionsMenu',
+                '#extensions_menu',
+                '.extensions_menu',
+                '#rm_button_panel_extensions_menu',
+                '#extensionsMenuButton + div',
+                '[id*="extensionsMenu"]',
+            ];
+            for (const sel of candidates) {
+                const $m = $(sel).first();
+                if ($m.length) return $m;
+            }
+            // 兜底：找含 extension_container 的菜单
+            const $c = $('.extension_container').first().parent();
+            if ($c.length) return $c;
+            return $();
+        }
+
+        function injectWand() {
+            if ($('#aqs_wand_btn').length) return true;
+            const menu = findExtensionsMenu();
+            if (!menu.length) return false;
+
+            const btn = $(`
+                <div id="aqs_wand_btn" class="extension_container interactable" tabindex="0" title="API 快切">
+                    <div class="list-group-item flex-container flexGap5 interactable">
+                        <div class="fa-solid fa-shuffle extensionsMenuExtensionButton"></div>
+                        API 快切
+                    </div>
+                </div>
+            `);
+            btn.on('click touchend', function (e) {
+                // touchend 在部分安卓 WebView 比 click 更稳；防双触发
+                if (e.type === 'touchend') {
+                    e.preventDefault();
+                    if (btn.data('aqs-touch-lock')) return;
+                    btn.data('aqs-touch-lock', 1);
+                    setTimeout(() => btn.removeData('aqs-touch-lock'), 350);
+                }
+                e.stopPropagation();
                 const panel = $('#aqs_quick_panel');
-                if (panel.is(':visible')) { panel.hide(); return; }
+                if (panel.is(':visible')) {
+                    panel.hide();
+                    return;
+                }
                 renderQuickPanel();
                 panel.show();
+                // 打开后把面板尽量贴近按钮
+                try {
+                    const r = this.getBoundingClientRect();
+                    const ph = panel.outerHeight() || 200;
+                    const top = Math.max(8, Math.min(window.innerHeight - ph - 8, r.top - ph - 8));
+                    const left = Math.max(8, Math.min(window.innerWidth - (panel.outerWidth() || 280) - 8, r.left));
+                    panel.css({ top: top + 'px', left: left + 'px', bottom: 'auto' });
+                } catch { /* ignore */ }
             });
 
-            $(document).on('pointerdown', (e) => {
-                const panel = $('#aqs_quick_panel');
-                if (!panel.is(':visible')) return;
-                if ($(e.target).closest('#aqs_quick_panel, #aqs_wand_item').length) return;
-                panel.hide();
+            // 优先塞进 extension_container 区域
+            const container = menu.find('.extension_container').first();
+            if (container.length) container.append(btn);
+            else menu.append(btn);
+            return true;
+        }
+
+        function ensureFloatingPanel() {
+            if ($('#aqs_quick_panel').length) return;
+            $('body').append('<div id="aqs_quick_panel" style="display:none;"></div>');
+            $(document).on('mousedown.aqs_qp touchstart.aqs_qp', (e) => {
+                const $t = $(e.target);
+                if ($t.closest('#aqs_quick_panel, #aqs_wand_btn').length) return;
+                $('#aqs_quick_panel').hide();
             });
         }
 
-        /* ---------------- 斜杠命令 /apiswitch ---------------- */
-        function setupSlashCommand() {
-            try {
-                const { SlashCommandParser, SlashCommand, SlashCommandArgument, ARGUMENT_TYPE } = ctx;
-                if (!SlashCommandParser || !SlashCommand) return;
-                SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-                    name: 'apiswitch',
-                    aliases: ['aqs'],
-                    helpString: '按名称切换已保存的站点，例如 /apiswitch 站点A；不带参数列出全部站点名。',
-                    unnamedArgumentList: SlashCommandArgument ? [SlashCommandArgument.fromProps({
-                        description: '站点名称',
-                        typeList: ARGUMENT_TYPE ? [ARGUMENT_TYPE.STRING] : undefined,
-                        isRequired: false,
-                    })] : [],
-                    callback: async (_args, value) => {
-                        const name = String(value || '').trim();
-                        if (!name) {
-                            const names = settings.profiles.map((p) => p.name).join('、') || '（空）';
-                            toastr.info(names, '已保存的站点');
-                            return names;
-                        }
-                        const p = settings.profiles.find((x) => x.name === name);
-                        if (!p) { toastr.warning('没有找到站点：' + name); return ''; }
-                        await applyProfile(p);
-                        return p.name;
-                    },
-                }));
-            } catch (e) {
-                console.warn('[API快切] 斜杠命令注册失败（不影响其他功能）', e);
+        function watchUiHosts() {
+            ensureFloatingPanel();
+            ensureApiEmbed();
+            injectWand();
+
+            // 手机 ST 上魔法棒菜单 / API 抽屉可能晚于扩展脚本出现
+            let tries = 0;
+            const timer = setInterval(() => {
+                tries++;
+                const okWand = injectWand();
+                const okEmbed = ensureApiEmbed();
+                if ((okWand && okEmbed) || tries > 40) clearInterval(timer);
+            }, 500);
+
+            if (window.MutationObserver) {
+                const mo = new MutationObserver(() => {
+                    injectWand();
+                    ensureApiEmbed();
+                });
+                mo.observe(document.body, { childList: true, subtree: true });
+                // 60s 后停观察，避免长期开销；之后仍可靠 interval 前 20s 的结果
+                setTimeout(() => mo.disconnect(), 60000);
             }
+
+            // 打开 API 抽屉时强制刷新嵌入列表
+            $(document).on('click.aqs_api_drawer', '#API-status-top, #sys-settings-button .drawer-toggle, #rm_api_block', () => {
+                setTimeout(() => {
+                    ensureApiEmbed();
+                    renderApiEmbed();
+                }, 50);
+            });
         }
 
-        /* ---------------- 设置面板挂载 ---------------- */
+        /* 重写 renderAll：同步刷新快捷面板 + 插头嵌入 */
+        function renderAll() {
+            renderList();
+            if ($('#aqs_quick_panel').is(':visible')) renderQuickPanel();
+            renderApiEmbed();
+        }
+
+        /* ---------------- 设置面板 HTML ---------------- */
         const html = `
-        <div class="aqs-settings">
-          <div class="inline-drawer">
-            <div class="inline-drawer-toggle inline-drawer-header">
-              <b><i class="fa-solid fa-shuffle aqs-grad-icon"></i>&nbsp;API 快切</b>
-              <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-            </div>
-            <div class="inline-drawer-content">
+            <div class="aqs-settings">
               <div class="aqs-sys-bar">
-                <span class="aqs-sys-id">API·SWITCHER</span>
+                <span class="aqs-sys-id">API·SWITCH</span>
                 <span class="aqs-sys-ver">v${VERSION}</span>
-                <i class="aqs-blink">▊</i>
+                <span class="aqs-blink">_</span>
                 <span class="aqs-sys-spacer"></span>
-                <button id="aqs_update_btn" class="menu_button aqs-btn"><i class="fa-solid fa-satellite-dish"></i> 检查更新</button>
-              </div>
-              <div id="aqs_profile_list"></div>
-              <div class="aqs-io-btns">
-                <button id="aqs_export" class="menu_button aqs-btn" title="导出全部站点为 JSON 备份"><i class="fa-solid fa-download"></i> 导出</button>
-                <button id="aqs_import" class="menu_button aqs-btn" title="从 JSON 备份导入（同名覆盖）"><i class="fa-solid fa-upload"></i> 导入</button>
-                <input type="file" id="aqs_import_file" accept=".json,application/json" hidden>
+                <div id="aqs_update_btn" class="menu_button menu_button_icon aqs-btn" title="检查 / 安装更新">
+                  <i class="fa-solid fa-satellite-dish"></i> 检查更新
+                </div>
               </div>
               <hr class="aqs-hr">
-              <div id="aqs_form_title" class="aqs-form-title">新增站点</div>
-              <input id="aqs_name" class="text_pole" placeholder="站点名称（如：公益站A）">
-              <input id="aqs_url" class="text_pole" placeholder="接口地址 URL（如 https://xx.com/v1）">
-              <input id="aqs_key" class="text_pole" type="password" placeholder="API 密钥 Key" autocomplete="off">
+              <div id="aqs_profile_list"></div>
+              <hr class="aqs-hr">
+              <div class="aqs-form-title" id="aqs_form_title">新增站点</div>
+              <input id="aqs_name" class="text_pole" type="text" placeholder="名称（如：OpenRouter）" autocomplete="off">
+              <input id="aqs_url" class="text_pole" type="text" placeholder="API URL（https://.../v1）" autocomplete="off">
+              <input id="aqs_key" class="text_pole" type="password" placeholder="API Key" autocomplete="off">
               <div class="aqs-model-row">
-                <input id="aqs_model" class="text_pole" placeholder="模型 ID（可点右侧按钮获取）">
-                <button id="aqs_fetch_models" class="menu_button aqs-btn" title="从上面填的 URL+Key 获取模型列表"><i class="fa-solid fa-microchip"></i> 获取模型</button>
+                <input id="aqs_model" class="text_pole" type="text" placeholder="模型 ID（可留空）" autocomplete="off">
+                <div id="aqs_fetch_models" class="menu_button menu_button_icon aqs-btn" title="从接口拉取模型列表">
+                  <i class="fa-solid fa-list"></i> 获取模型
+                </div>
               </div>
-              <div class="aqs-field-label">分组 · 可选（点选已有分组，或点「新分组」输入）</div>
+              <div class="aqs-field-label">分组</div>
               <div id="aqs_group_picker"></div>
-              <input id="aqs_group" class="text_pole" placeholder="输入新分组名称" style="display:none" autocomplete="off">
+              <input id="aqs_group" class="text_pole" type="text" placeholder="输入新分组名" autocomplete="off" style="display:none;">
               <div class="aqs-form-btns">
-                <button id="aqs_fill_current" class="menu_button aqs-btn" title="读取当前连接面板里的 URL 和模型（Key 无法读取，需手填）"><i class="fa-solid fa-rotate"></i> 读取当前</button>
-                <button id="aqs_save" class="menu_button aqs-btn aqs-btn-primary"><i class="fa-solid fa-plus"></i> 保存站点</button>
-                <button id="aqs_cancel_edit" class="menu_button aqs-btn" style="display:none">取消编辑</button>
+                <div id="aqs_save" class="menu_button menu_button_icon aqs-btn aqs-btn-primary">
+                  <i class="fa-solid fa-plus"></i> 保存站点
+                </div>
+                <div id="aqs_cancel_edit" class="menu_button menu_button_icon aqs-btn" style="display:none;">
+                  取消编辑
+                </div>
               </div>
-              <small class="aqs-note">Key 明文存于本机 settings.json，仅建议个人设备使用。快捷入口：输入框旁魔棒菜单 → API 快切，或命令 /apiswitch 站点名</small>
+              <div class="aqs-io-btns">
+                <div id="aqs_export" class="menu_button menu_button_icon aqs-btn">
+                  <i class="fa-solid fa-file-export"></i> 导出
+                </div>
+                <div id="aqs_import" class="menu_button menu_button_icon aqs-btn">
+                  <i class="fa-solid fa-file-import"></i> 导入
+                </div>
+                <input id="aqs_import_file" type="file" accept="application/json,.json" style="display:none;">
+              </div>
+              <span class="aqs-note">
+                手机端主入口：点顶部「插头 / API Connections」即可快切；魔法棒菜单为快捷入口。
+                切换后若密钥未生效，可到 API 页点一次 Connect。
+              </span>
             </div>
-          </div>
-        </div>`;
+        `;
 
-        const container = $('#extensions_settings2').length ? $('#extensions_settings2') : $('#extensions_settings');
-        container.append(html);
+        ctx.extensionSettings[MODULE] = settings;
+        const container = $('#extensions_settings2, #extensions_settings').first();
+        if (container.length) {
+            container.append(html);
+        } else {
+            // 某些移动端壳子设置面板晚挂载
+            const waitSettings = setInterval(() => {
+                const c = $('#extensions_settings2, #extensions_settings').first();
+                if (!c.length) return;
+                clearInterval(waitSettings);
+                if (!$('.aqs-settings').length) c.append(html);
+                bindSettingsUi();
+                renderList();
+            }, 400);
+            setTimeout(() => clearInterval(waitSettings), 20000);
+        }
 
-        $('#aqs_update_btn').on('click', () => {
-            if (updState === 'available') { doUpdate(); return; }
-            if (updState === 'updated') { location.reload(); return; }
-            checkUpdate(false);
-        });
-        $('#aqs_save').on('click', onSave);
-        $('#aqs_cancel_edit').on('click', resetForm);
-        $('#aqs_fill_current').on('click', () => {
-            $('#aqs_url').val($('#custom_api_url_text').val());
-            $('#aqs_model').val($('#custom_model_id').val());
-            toastr.info('已填入当前 URL 和模型，Key 需手动填写');
-        });
-        $('#aqs_fetch_models').on('click', () => {
-            const url = normUrl($('#aqs_url').val());
-            const key = String($('#aqs_key').val() || '').trim();
-            openModelPicker(url, key, (m) => $('#aqs_model').val(m));
-        });
-        $('#aqs_export').on('click', exportProfiles);
-        $('#aqs_import').on('click', () => $('#aqs_import_file').trigger('click'));
-        $('#aqs_import_file').on('change', function () {
-            if (this.files && this.files[0]) importProfiles(this.files[0]);
-            this.value = '';
-        });
+        function bindSettingsUi() {
+            $('#aqs_save').off('click.aqs').on('click.aqs', onSave);
+            $('#aqs_cancel_edit').off('click.aqs').on('click.aqs', resetForm);
+            $('#aqs_export').off('click.aqs').on('click.aqs', exportProfiles);
+            $('#aqs_import').off('click.aqs').on('click.aqs', () => $('#aqs_import_file').trigger('click'));
+            $('#aqs_import_file').off('change.aqs').on('change.aqs', function () {
+                if (this.files && this.files[0]) importProfiles(this.files[0]);
+                this.value = '';
+            });
+            $('#aqs_fetch_models').off('click.aqs').on('click.aqs', () => {
+                openModelPicker($('#aqs_url').val(), $('#aqs_key').val(), (m) => {
+                    $('#aqs_model').val(m);
+                    toastr.success('已选择：' + m, 'API 快切');
+                });
+            });
+            $('#aqs_update_btn').off('click.aqs').on('click.aqs', async () => {
+                if (updState === 'available' || updState === 'updated') await doUpdate();
+                else await checkUpdate(false);
+            });
+        }
+        bindSettingsUi();
 
-        let urlTimer = null;
-        $(document).on('input', '#custom_api_url_text', () => {
-            clearTimeout(urlTimer);
-            urlTimer = setTimeout(renderAll, 500);
-        });
 
-        setupQuickPanel();
-        setupSlashCommand();
+        // 替换旧的 renderAll 定义：上面已经有新 renderAll，删除后面的重复定义依赖
+        // 初始化 UI 宿主
+        watchUiHosts();
         renderList();
         setTimeout(() => checkUpdate(true), 3000);
 

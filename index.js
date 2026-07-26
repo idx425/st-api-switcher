@@ -9,7 +9,8 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '1.2.1';
+    const VERSION = '1.2.2';
+    const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
     function getCtx() {
@@ -101,17 +102,78 @@
             btn.toggleClass('aqs-update-avail', s === 'available' || s === 'updated');
         }
 
+        let scopeCache;
+
+        function fetchTimeout(url, opts, ms) {
+            const ac = new AbortController();
+            const t = setTimeout(() => ac.abort(), ms || 8000);
+            return fetch(url, Object.assign({}, opts, { signal: ac.signal })).finally(() => clearTimeout(t));
+        }
+
+        async function resolveInstallScope() {
+            if (scopeCache !== undefined) return scopeCache;
+            try {
+                const res = await fetchTimeout('/api/extensions/discover', {
+                    method: 'GET',
+                    headers: ctx.getRequestHeaders(),
+                });
+                if (res.ok) {
+                    const list = await res.json();
+                    const hit = Array.isArray(list) && list.find((e) =>
+                        e && (e.name === `third-party/${EXT_NAME}` || e.name === EXT_NAME));
+                    if (hit) {
+                        scopeCache = String(hit.type).toLowerCase() === 'global';
+                        return scopeCache;
+                    }
+                }
+            } catch { /* 后端不支持 discover 时走盲测 */ }
+            scopeCache = null;
+            return null;
+        }
+
+        function cmpVer(a, b) {
+            const pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number);
+            for (let i = 0; i < 3; i++) {
+                const d = (pa[i] || 0) - (pb[i] || 0);
+                if (d) return d;
+            }
+            return 0;
+        }
+
+        async function checkRemoteManifest() {
+            const urls = [
+                `https://raw.githubusercontent.com/${REPO_PATH}/main/manifest.json`,
+                `https://cdn.jsdelivr.net/gh/${REPO_PATH}@main/manifest.json`,
+                `https://fastly.jsdelivr.net/gh/${REPO_PATH}@main/manifest.json`,
+            ];
+            for (const u of urls) {
+                try {
+                    const res = await fetchTimeout(u, { cache: 'no-cache' }, 6000);
+                    if (!res.ok) continue;
+                    const m = await res.json();
+                    if (m && m.version) return m.version;
+                } catch { /* 换下一个源 */ }
+            }
+            return null;
+        }
+
         async function checkUpdate(silent) {
             if (updState === 'checking' || updState === 'updating') return;
             setUpdateState('checking');
-            for (const g of [false, true]) {
+            const scope = await resolveInstallScope();
+            const tries = scope === null ? [true, false] : [scope];
+            let backendErr = null;
+            for (const g of tries) {
                 try {
-                    const res = await fetch('/api/extensions/version', {
+                    const res = await fetchTimeout('/api/extensions/version', {
                         method: 'POST',
                         headers: ctx.getRequestHeaders(),
                         body: JSON.stringify({ extensionName: EXT_NAME, global: g }),
                     });
-                    if (!res.ok) continue;
+                    if (!res.ok) {
+                        backendErr = await res.text().catch(() => 'HTTP ' + res.status);
+                        continue;
+                    }
                     const data = await res.json();
                     updGlobal = g;
                     if (data.isUpToDate === false) {
@@ -122,29 +184,62 @@
                         if (!silent) toastr.success('已是最新版本 v' + VERSION, 'API 快切');
                     }
                     return;
-                } catch { /* 尝试下一种 */ }
+                } catch (e) { backendErr = String(e && e.message || e); }
+            }
+            const remoteVer = await checkRemoteManifest();
+            if (remoteVer && cmpVer(remoteVer, VERSION) > 0) {
+                if (scope !== null) updGlobal = scope;
+                setUpdateState('available');
+                if (!silent) toastr.info(`发现新版本 v${remoteVer}，点按钮一键更新`, 'API 快切');
+                return;
+            }
+            if (remoteVer) {
+                setUpdateState('latest');
+                if (!silent) toastr.success('已是最新版本 v' + VERSION, 'API 快切');
+                return;
             }
             setUpdateState('idle');
-            if (!silent) toastr.warning('无法检查更新：需通过「安装扩展」粘贴仓库链接安装才支持', 'API 快切');
+            if (!silent) {
+                const hint = /not found/i.test(backendErr || '')
+                    ? '后端找不到扩展目录（可能安装方式不受支持）'
+                    : '后端无法连接 GitHub（如在国内请开启代理后重试）';
+                toastr.warning('无法检查更新：' + hint, 'API 快切');
+            }
         }
 
         async function doUpdate() {
             setUpdateState('updating');
-            try {
-                const res = await fetch('/api/extensions/update', {
-                    method: 'POST',
-                    headers: ctx.getRequestHeaders(),
-                    body: JSON.stringify({ extensionName: EXT_NAME, global: updGlobal }),
-                });
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                setUpdateState('updated');
-                if (confirm('更新完成！立即刷新页面使新版本生效？')) {
-                    location.reload();
-                }
-            } catch (err) {
-                setUpdateState('available');
-                toastr.error(String(err && err.message || err), '更新失败');
+            const scope = await resolveInstallScope();
+            const tries = scope === null ? [updGlobal, !updGlobal] : [scope];
+            let lastErr = null;
+            for (const g of tries) {
+                try {
+                    const res = await fetchTimeout('/api/extensions/update', {
+                        method: 'POST',
+                        headers: ctx.getRequestHeaders(),
+                        body: JSON.stringify({ extensionName: EXT_NAME, global: g }),
+                    }, 30000);
+                    if (!res.ok) {
+                        lastErr = await res.text().catch(() => 'HTTP ' + res.status);
+                        continue;
+                    }
+                    setUpdateState('updated');
+                    if (confirm('更新完成！立即刷新页面使新版本生效？')) {
+                        location.reload();
+                    }
+                    return;
+                } catch (e) { lastErr = String(e && e.message || e); }
             }
+            setUpdateState('available');
+            let hint = lastErr || '未知错误';
+            if (/metadata is missing/i.test(hint)) {
+                hint = '扩展缺少安装来源信息，请在「管理扩展」里删除后，用「安装扩展」粘贴仓库链接重装一次（已保存的配置不会丢失）';
+            } else if (/not found/i.test(hint)) {
+                hint = '后端找不到扩展目录，请删除后用「安装扩展」重装一次（配置不会丢失）';
+            } else if (/network|fetch|timeout|abort|connect/i.test(hint)) {
+                hint = '无法连接 GitHub 下载更新（如在国内请开启代理后重试）';
+            }
+            toastr.error(hint, '更新失败');
         }
 
         /* ---------------- 模型列表获取 ---------------- */

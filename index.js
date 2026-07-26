@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '1.2.2';
+    const VERSION = '1.3.0';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -35,7 +35,11 @@
         const settings = ctx.extensionSettings[MODULE];
         const save = () => ctx.saveSettingsDebounced();
         const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-        settings.profiles.forEach((p) => { if (!p.id) p.id = uid(); });
+        if (!settings.groupCollapsed || typeof settings.groupCollapsed !== 'object') settings.groupCollapsed = {};
+        settings.profiles.forEach((p) => {
+            if (!p.id) p.id = uid();
+            if (typeof p.group !== 'string') p.group = '';
+        });
 
         let editingId = null;
 
@@ -244,21 +248,29 @@
 
         /* ---------------- 模型列表获取 ---------------- */
         async function fetchModelList(url, key) {
-            await writeKey(key);
-            const res = await fetch('/api/backends/chat-completions/status', {
-                method: 'POST',
-                headers: ctx.getRequestHeaders(),
-                body: JSON.stringify({ chat_completion_source: 'custom', custom_url: url }),
-            });
-            if (!res.ok) throw new Error('接口返回 HTTP ' + res.status);
-            const json = await res.json();
-            if (json && json.error) throw new Error(json.message || '接口报错');
-            const arr = Array.isArray(json) ? json : (json.data || json.models || []);
-            const models = arr
-                .map((m) => (typeof m === 'string' ? m : (m.id || m.model || m.name)))
-                .filter(Boolean);
-            if (!models.length) throw new Error('接口没有返回模型列表');
-            return [...new Set(models)].sort();
+            // 拉模型需要临时把该站点的 Key 写进密钥库；结束后必须还原当前连接的 Key，
+            // 否则给未连接的站点拉模型会污染正在使用的连接（重连时报密钥错误）
+            const prevKey = String($('#api_key_custom').val() || '');
+            const wrote = !!key && key !== prevKey;
+            if (wrote) await writeKey(key);
+            try {
+                const res = await fetch('/api/backends/chat-completions/status', {
+                    method: 'POST',
+                    headers: ctx.getRequestHeaders(),
+                    body: JSON.stringify({ chat_completion_source: 'custom', custom_url: url }),
+                });
+                if (!res.ok) throw new Error('接口返回 HTTP ' + res.status);
+                const json = await res.json();
+                if (json && json.error) throw new Error(json.message || '接口报错');
+                const arr = Array.isArray(json) ? json : (json.data || json.models || []);
+                const models = arr
+                    .map((m) => (typeof m === 'string' ? m : (m.id || m.model || m.name)))
+                    .filter(Boolean);
+                if (!models.length) throw new Error('接口没有返回模型列表');
+                return [...new Set(models)].sort();
+            } finally {
+                if (wrote && prevKey) writeKey(prevKey).catch(() => {});
+            }
         }
 
         function openModelPicker(url, key, onPick) {
@@ -316,7 +328,6 @@
         function profileCard(p) {
             const active = isActive(p);
             const card = $('<div class="aqs-card"></div>').toggleClass('aqs-active', active);
-            card.append($('<span class="aqs-hud aqs-hud-tl"></span>'), $('<span class="aqs-hud aqs-hud-br"></span>'));
 
             const head = $('<div class="aqs-card-head"></div>');
             $('<span class="aqs-dot"></span>').appendTo(head);
@@ -360,13 +371,47 @@
             return card;
         }
 
+        function groupNames() {
+            const set = new Set();
+            settings.profiles.forEach((p) => { if (p.group) set.add(p.group); });
+            return [...set];
+        }
+
+        function refreshGroupDatalist() {
+            const dl = $('#aqs_group_list');
+            if (!dl.length) return;
+            dl.empty();
+            groupNames().forEach((g) => $('<option>').attr('value', g).appendTo(dl));
+        }
+
         function renderList() {
             const list = $('#aqs_profile_list').empty();
+            refreshGroupDatalist();
             if (!settings.profiles.length) {
-                list.append($('<div class="aqs-empty">还没有配置，在下方添加第一个吧</div>'));
+                list.append($('<div class="aqs-empty">还没有站点，在下方添加第一个吧</div>'));
                 return;
             }
-            settings.profiles.forEach((p) => list.append(profileCard(p)));
+            settings.profiles.filter((p) => !p.group).forEach((p) => list.append(profileCard(p)));
+            for (const g of groupNames()) {
+                const items = settings.profiles.filter((p) => p.group === g);
+                const collapsed = !!settings.groupCollapsed[g];
+                const box = $('<div class="aqs-group"></div>').toggleClass('aqs-collapsed', collapsed);
+                const head = $('<div class="aqs-group-head" title="点击展开/收起"></div>');
+                $('<i class="fa-solid fa-chevron-down aqs-group-chevron"></i>').appendTo(head);
+                $('<span class="aqs-group-name"></span>').text(g).appendTo(head);
+                if (items.some(isActive)) $('<span class="aqs-group-live" title="当前连接在此分组"></span>').appendTo(head);
+                $('<span class="aqs-group-count"></span>').text(items.length).appendTo(head);
+                head.on('click', () => {
+                    settings.groupCollapsed[g] = !settings.groupCollapsed[g];
+                    save();
+                    renderList();
+                });
+                box.append(head);
+                const body = $('<div class="aqs-group-body"></div>');
+                items.forEach((p) => body.append(profileCard(p)));
+                box.append(body);
+                list.append(box);
+            }
         }
 
         function renderAll() {
@@ -381,6 +426,7 @@
             $('#aqs_url').val(p.url);
             $('#aqs_key').val(p.key || '');
             $('#aqs_model').val(p.model || '');
+            $('#aqs_group').val(p.group || '');
             $('#aqs_form_title').text('编辑：' + p.name);
             $('#aqs_save').html('<i class="fa-solid fa-floppy-disk"></i> 保存修改');
             $('#aqs_cancel_edit').show();
@@ -388,9 +434,9 @@
 
         function resetForm() {
             editingId = null;
-            $('#aqs_name, #aqs_url, #aqs_key, #aqs_model').val('');
-            $('#aqs_form_title').text('新增配置');
-            $('#aqs_save').html('<i class="fa-solid fa-plus"></i> 保存配置');
+            $('#aqs_name, #aqs_url, #aqs_key, #aqs_model, #aqs_group').val('');
+            $('#aqs_form_title').text('新增站点');
+            $('#aqs_save').html('<i class="fa-solid fa-plus"></i> 保存站点');
             $('#aqs_cancel_edit').hide();
         }
 
@@ -399,6 +445,7 @@
             const url = normUrl($('#aqs_url').val());
             const key = String($('#aqs_key').val() || '').trim();
             const model = String($('#aqs_model').val() || '').trim();
+            const group = String($('#aqs_group').val() || '').trim();
 
             if (!name || !url) { toastr.warning('名称和 URL 必填'); return; }
             if (!/^https?:\/\//i.test(url)) { toastr.warning('URL 需要以 http:// 或 https:// 开头'); return; }
@@ -407,17 +454,17 @@
                 const p = settings.profiles.find((x) => x.id === editingId);
                 if (!p) { resetForm(); return; }
                 const dup = settings.profiles.find((x) => x.name === name && x.id !== editingId);
-                if (dup) { toastr.warning('已存在同名配置「' + name + '」'); return; }
-                Object.assign(p, { name, url, key, model });
+                if (dup) { toastr.warning('已存在同名站点「' + name + '」'); return; }
+                Object.assign(p, { name, url, key, model, group });
                 toastr.success('已更新「' + name + '」');
             } else {
                 const dup = settings.profiles.find((x) => x.name === name);
                 if (dup) {
-                    if (!confirm('已存在同名配置「' + name + '」，覆盖它吗？')) return;
-                    Object.assign(dup, { url, key, model });
+                    if (!confirm('已存在同名站点「' + name + '」，覆盖它吗？')) return;
+                    Object.assign(dup, { url, key, model, group });
                     toastr.success('已覆盖「' + name + '」');
                 } else {
-                    settings.profiles.push({ id: uid(), name, url, key, model });
+                    settings.profiles.push({ id: uid(), name, url, key, model, group });
                     toastr.success('已保存「' + name + '」');
                 }
             }
@@ -428,8 +475,8 @@
 
         /* ---------------- 导入 / 导出 ---------------- */
         function exportProfiles() {
-            if (!settings.profiles.length) { toastr.warning('没有可导出的配置'); return; }
-            const data = JSON.stringify({ app: 'st-api-switcher', version: 1, profiles: settings.profiles }, null, 2);
+            if (!settings.profiles.length) { toastr.warning('没有可导出的站点'); return; }
+            const data = JSON.stringify({ app: 'st-api-switcher', version: 2, profiles: settings.profiles }, null, 2);
             const blob = new Blob([data], { type: 'application/json' });
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
@@ -454,6 +501,7 @@
                             url: normUrl(item.url),
                             key: typeof item.key === 'string' ? item.key : '',
                             model: typeof item.model === 'string' ? item.model : '',
+                            group: typeof item.group === 'string' ? item.group.trim() : '',
                         };
                         if (!clean.name || !clean.url) continue;
                         const dup = settings.profiles.find((x) => x.name === clean.name);
@@ -475,10 +523,10 @@
             const panel = $('#aqs_quick_panel').empty();
             $('<div class="aqs-qp-title"><i class="fa-solid fa-shuffle"></i> API·SWITCH</div>').appendTo(panel);
             if (!settings.profiles.length) {
-                $('<div class="aqs-empty">先去扩展设置里添加配置</div>').appendTo(panel);
+                $('<div class="aqs-empty">先去扩展设置里添加站点</div>').appendTo(panel);
                 return;
             }
-            for (const p of settings.profiles) {
+            const addItem = (p) => {
                 const item = $('<div class="aqs-qp-item"></div>').toggleClass('aqs-active', isActive(p));
                 $('<span class="aqs-qp-name"></span>').text(p.name).appendTo(item);
                 if (p.model) $('<span class="aqs-qp-model"></span>').text(p.model).appendTo(item);
@@ -487,6 +535,11 @@
                     await applyProfile(p);
                 });
                 panel.append(item);
+            };
+            settings.profiles.filter((p) => !p.group).forEach(addItem);
+            for (const g of groupNames()) {
+                $('<div class="aqs-qp-group"></div>').text(g).appendTo(panel);
+                settings.profiles.filter((p) => p.group === g).forEach(addItem);
             }
         }
 
@@ -521,7 +574,7 @@
                 SlashCommandParser.addCommandObject(SlashCommand.fromProps({
                     name: 'apiswitch',
                     aliases: ['aqs'],
-                    helpString: '按名称切换已保存的 API 配置，例如 /apiswitch 中转A；不带参数列出全部配置名。',
+                    helpString: '按名称切换已保存的站点，例如 /apiswitch 站点A；不带参数列出全部站点名。',
                     unnamedArgumentList: SlashCommandArgument ? [SlashCommandArgument.fromProps({
                         description: '配置名称',
                         typeList: ARGUMENT_TYPE ? [ARGUMENT_TYPE.STRING] : undefined,
@@ -531,11 +584,11 @@
                         const name = String(value || '').trim();
                         if (!name) {
                             const names = settings.profiles.map((p) => p.name).join('、') || '（空）';
-                            toastr.info(names, '已保存的配置');
+                            toastr.info(names, '已保存的站点');
                             return names;
                         }
                         const p = settings.profiles.find((x) => x.name === name);
-                        if (!p) { toastr.warning('没有找到配置：' + name); return ''; }
+                        if (!p) { toastr.warning('没有找到站点：' + name); return ''; }
                         await applyProfile(p);
                         return p.name;
                     },
@@ -563,25 +616,27 @@
               </div>
               <div id="aqs_profile_list"></div>
               <div class="aqs-io-btns">
-                <button id="aqs_export" class="menu_button aqs-btn" title="导出全部配置为 JSON 备份"><i class="fa-solid fa-download"></i> 导出</button>
+                <button id="aqs_export" class="menu_button aqs-btn" title="导出全部站点为 JSON 备份"><i class="fa-solid fa-download"></i> 导出</button>
                 <button id="aqs_import" class="menu_button aqs-btn" title="从 JSON 备份导入（同名覆盖）"><i class="fa-solid fa-upload"></i> 导入</button>
                 <input type="file" id="aqs_import_file" accept=".json,application/json" hidden>
               </div>
               <hr class="aqs-hr">
-              <div id="aqs_form_title" class="aqs-form-title">新增配置</div>
-              <input id="aqs_name" class="text_pole" placeholder="配置名称（如：中转A）">
+              <div id="aqs_form_title" class="aqs-form-title">新增站点</div>
+              <input id="aqs_name" class="text_pole" placeholder="站点名称（如：公益站A）">
               <input id="aqs_url" class="text_pole" placeholder="接口地址 URL（如 https://xx.com/v1）">
               <input id="aqs_key" class="text_pole" type="password" placeholder="API 密钥 Key" autocomplete="off">
               <div class="aqs-model-row">
                 <input id="aqs_model" class="text_pole" placeholder="模型 ID（可点右侧按钮获取）">
                 <button id="aqs_fetch_models" class="menu_button aqs-btn" title="从上面填的 URL+Key 获取模型列表"><i class="fa-solid fa-microchip"></i> 获取模型</button>
               </div>
+              <input id="aqs_group" class="text_pole" placeholder="分组（可选，同名自动归为一组，如：Claude 站）" list="aqs_group_list">
+              <datalist id="aqs_group_list"></datalist>
               <div class="aqs-form-btns">
                 <button id="aqs_fill_current" class="menu_button aqs-btn" title="读取当前连接面板里的 URL 和模型（Key 无法读取，需手填）"><i class="fa-solid fa-rotate"></i> 读取当前</button>
-                <button id="aqs_save" class="menu_button aqs-btn aqs-btn-primary"><i class="fa-solid fa-plus"></i> 保存配置</button>
+                <button id="aqs_save" class="menu_button aqs-btn aqs-btn-primary"><i class="fa-solid fa-plus"></i> 保存站点</button>
                 <button id="aqs_cancel_edit" class="menu_button aqs-btn" style="display:none">取消编辑</button>
               </div>
-              <small class="aqs-note">Key 明文存于本机 settings.json，仅建议个人设备使用。快捷入口：输入框旁魔棒菜单 → API 快切，或命令 /apiswitch 配置名</small>
+              <small class="aqs-note">Key 明文存于本机 settings.json，仅建议个人设备使用。快捷入口：输入框旁魔棒菜单 → API 快切，或命令 /apiswitch 站点名</small>
             </div>
           </div>
         </div>`;

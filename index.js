@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '2.3.0';
+    const VERSION = '2.3.1';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -58,11 +58,62 @@
             return fetch(url, Object.assign({}, opts, { signal: ac.signal })).finally(() => clearTimeout(t));
         }
 
-        /* ST/TT 的 /api/secrets/write 只会追加新条目，不会覆盖。
-         * 官方 Connect 在 #api_key_custom 有值时也会再 write 一次。
-         * 所以快切固定维护一条 label=API 快切 的密钥：先清后写，Connect 前清空输入框。 */
+        /* ST/TT 的 /api/secrets/write 只会追加新条目，不会原地覆盖。
+         * TT/新版 ST 的 Connect 会把 secret_state 里当前 active 的 id 作为 secret_id 发给后端；
+         * 若「先删后写」会让 secret_state 短暂指向已删除 id → Validation error: Secret id not found。
+         * 策略：先写新密钥（成为 active）→ 再删旧条目 → 同步 secret_state。
+         * Connect 前清空 #api_key_custom，避免官方再 write 追加一条。 */
         const SECRET_KEY_CUSTOM = 'api_key_custom';
         const SECRET_LABEL = 'API 快切';
+
+        let secretsModulePromise = null;
+        function loadSecretsModule() {
+            if (!secretsModulePromise) {
+                secretsModulePromise = import('/scripts/secrets.js')
+                    .catch(() => import('../../scripts/secrets.js'))
+                    .catch((err) => {
+                        console.warn('[API快切] 无法加载 secrets 模块，使用裸 API', err);
+                        return null;
+                    });
+            }
+            return secretsModulePromise;
+        }
+
+        async function refreshSecretState() {
+            const mod = await loadSecretsModule();
+            if (mod && typeof mod.readSecretState === 'function') {
+                try {
+                    await mod.readSecretState();
+                    return true;
+                } catch (e) {
+                    console.warn('[API快切] readSecretState 失败', e);
+                }
+            }
+            // 最后兜底：直接改导出的 secret_state 引用
+            if (mod && mod.secret_state && typeof mod.secret_state === 'object') {
+                try {
+                    let headers;
+                    try {
+                        headers = ctx.getRequestHeaders({ omitContentType: true });
+                    } catch {
+                        headers = ctx.getRequestHeaders();
+                    }
+                    const res = await fetchTimeout('/api/secrets/read', {
+                        method: 'POST',
+                        headers,
+                    }, 8000);
+                    if (!res.ok) return false;
+                    const state = await res.json();
+                    for (const k of Object.keys(mod.secret_state)) delete mod.secret_state[k];
+                    Object.assign(mod.secret_state, state || {});
+                    if (typeof mod.updateSecretDisplay === 'function') mod.updateSecretDisplay();
+                    return true;
+                } catch (e) {
+                    console.warn('[API快切] 手动同步 secret_state 失败', e);
+                }
+            }
+            return false;
+        }
 
         async function readCustomSecrets() {
             try {
@@ -94,11 +145,10 @@
                 headers: ctx.getRequestHeaders(),
                 body: JSON.stringify(body),
             }, 8000);
-            // 旧版可能不带 id；非 2xx 时继续尝试其它条目
             return res.ok || res.status === 204;
         }
 
-        // 串行化密钥库写操作，避免连点切换时 purge/write 交错堆出多条
+        // 串行化密钥库写操作，避免连点切换时 write/delete 交错
         let secretWriteQueue = Promise.resolve();
         function queueSecretWrite(task) {
             const run = secretWriteQueue.then(task, task);
@@ -106,46 +156,77 @@
             return run;
         }
 
-        async function purgeCustomSecrets() {
-            // 最多扫几轮，避免异常死循环；ST/TT 都支持按 id 删除
-            for (let round = 0; round < 8; round++) {
+        async function pruneOtherCustomSecrets(keepId) {
+            for (let round = 0; round < 6; round++) {
                 const list = await readCustomSecrets();
-                if (!list.length) return true;
+                if (list.length <= 1) return list;
+                const keep = (keepId && list.find((x) => x && x.id === keepId))
+                    || list.find((x) => x && x.active)
+                    || list[list.length - 1];
+                let removed = 0;
                 for (const item of list) {
-                    if (item && item.id) await deleteCustomSecret(item.id);
-                    else await deleteCustomSecret();
+                    if (!item || !item.id || !keep || item.id === keep.id) continue;
+                    if (await deleteCustomSecret(item.id)) removed += 1;
                 }
-                await sleep(40);
+                if (!removed) break;
+                await sleep(30);
             }
-            const left = await readCustomSecrets();
-            return !left.length;
+            return readCustomSecrets();
         }
 
         async function writeKey(key) {
             const value = String(key || '');
             return queueSecretWrite(async () => {
-                // 先清掉 api_key_custom 槽位里已有条目，再写入唯一一条（覆盖语义）
-                const cleared = await purgeCustomSecrets();
-                if (!cleared) {
-                    console.warn('[API快切] 清空 api_key_custom 未完全成功，仍尝试写入');
-                }
-                if (!value) return;
-                const res = await fetchTimeout('/api/secrets/write', {
-                    method: 'POST',
-                    headers: ctx.getRequestHeaders(),
-                    body: JSON.stringify({ key: SECRET_KEY_CUSTOM, value, label: SECRET_LABEL }),
-                }, 8000);
-                if (!res.ok) throw new Error('写入密钥失败: HTTP ' + res.status);
+                const mod = await loadSecretsModule();
 
-                // 若仍有残留（竞态/旧版），再清一次多余条目，只留最新
-                const after = await readCustomSecrets();
-                if (after.length > 1) {
-                    const keep = after[after.length - 1];
-                    for (const item of after) {
-                        if (!item || !item.id || !keep || item.id === keep.id) continue;
-                        await deleteCustomSecret(item.id);
+                // 空 Key：清空槽位后同步状态
+                if (!value) {
+                    const list = await readCustomSecrets();
+                    for (const item of list) {
+                        if (item && item.id) await deleteCustomSecret(item.id);
+                        else await deleteCustomSecret();
                     }
+                    await refreshSecretState();
+                    return;
                 }
+
+                // 1) 先写入新密钥（成为 active），绝不能先删光再写
+                let keepId = null;
+                if (mod && typeof mod.writeSecret === 'function') {
+                    keepId = await mod.writeSecret(SECRET_KEY_CUSTOM, value, SECRET_LABEL);
+                    if (!keepId) {
+                        // writeSecret 失败时回退裸 API
+                        const res = await fetchTimeout('/api/secrets/write', {
+                            method: 'POST',
+                            headers: ctx.getRequestHeaders(),
+                            body: JSON.stringify({ key: SECRET_KEY_CUSTOM, value, label: SECRET_LABEL }),
+                        }, 8000);
+                        if (!res.ok) throw new Error('写入密钥失败: HTTP ' + res.status);
+                        try {
+                            const data = await res.json();
+                            keepId = data && data.id;
+                        } catch { /* ignore */ }
+                        await refreshSecretState();
+                    }
+                } else {
+                    const res = await fetchTimeout('/api/secrets/write', {
+                        method: 'POST',
+                        headers: ctx.getRequestHeaders(),
+                        body: JSON.stringify({ key: SECRET_KEY_CUSTOM, value, label: SECRET_LABEL }),
+                    }, 8000);
+                    if (!res.ok) throw new Error('写入密钥失败: HTTP ' + res.status);
+                    try {
+                        const data = await res.json();
+                        keepId = data && data.id;
+                    } catch { /* ignore */ }
+                    await refreshSecretState();
+                }
+
+                // 2) 再删旧条目，只保留刚写入的那条（覆盖语义、不堆密钥）
+                await pruneOtherCustomSecrets(keepId);
+
+                // 3) 最终同步前端 secret_state，保证 Connect 带上的 secret_id 存在
+                await refreshSecretState();
             });
         }
 

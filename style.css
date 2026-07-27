@@ -632,6 +632,13 @@
     flex-wrap: wrap;
     gap: 8px;
     margin-top: 8px;
+    align-items: center;
+}
+
+#aqs_group_picker .aqs-pager {
+    flex: 1 0 100%;
+    margin: 2px 0 0;
+    padding: 4px 0 0;
 }
 
 .aqs-gchip {

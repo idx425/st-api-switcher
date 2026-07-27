@@ -16,8 +16,8 @@ SillyTavern（酒馆）扩展：一键切换 OpenAI 兼容接口的 **URL + API 
 - 📦 **导入 / 导出**：JSON 备份（含分组），换设备不用重填
 - 🔄 **内置一键更新**：面板顶部自动检测新版本（国内网络走 CDN 兜底），点一下即可更新
 - 💎 **高级暗色玻璃界面**：玻璃拟态、细线分层、克制光效、等宽数据读出
-- 📱 **单列 + 分页**：扩展设置始终一行一卡（模型名完整换行）；站点 / 分组 / 插头嵌入 / 魔棒快捷面板每页 4 条，页码会记忆
-- 🔐 **密钥不堆条目**：切换站点时覆盖 `api_key_custom` 槽位（先清后写），避免 ST/TT 密钥库每次新建一条
+- 📱 **单列 + 分页（每页 4）**：扩展设置顶层把「未分组站点 + 分组框」算作同一流水线分页；组内站点、表单分组芯片、插头嵌入、魔棒快捷面板均超过 4 条分页，页码记忆；手机 / 平板 / 电脑同逻辑
+- 🔐 **密钥不堆条目**：切换时对 `api_key_custom` 串行「先清后写」只保留一条（label=`API 快切`），Connect 前清空输入框，避免 ST/TT 密钥库越堆越多
 - 📱 **触屏友好**：手机点击区域加大，弹层可滚动
 - ✏️ 编辑、删除（带确认）、同名覆盖确认、「读取当前」快速录入
 
@@ -27,7 +27,7 @@ SillyTavern（酒馆）扩展：一键切换 OpenAI 兼容接口的 **URL + API 
 
 酒馆 → 扩展面板（三个方块图标）→ **安装扩展 (Install extension)** → 粘贴本仓库地址：
 
-```
+```markdown
 https://github.com/idx425/st-api-switcher
 ```
 
@@ -35,7 +35,7 @@ https://github.com/idx425/st-api-switcher
 
 把本仓库文件夹放入酒馆目录：
 
-```
+```markdown
 SillyTavern/data/default-user/extensions/st-api-switcher/
 ```
 
@@ -54,7 +54,7 @@ SillyTavern/data/default-user/extensions/st-api-switcher/
 ## 注意事项
 
 - 需要 SillyTavern **1.12+**
-- Key 以明文存储在本机 `settings.json` 中（酒馆扩展设置的通用机制），仅建议在个人设备上使用，导出的备份文件同样包含明文 Key
+- Key 以明文存储在本机 `file settings.json` 中（酒馆扩展设置的通用机制），仅建议在个人设备上使用，导出的备份文件同样包含明文 Key
 - "当前"高亮按 URL 匹配判断（Key 出于安全无法读回比对）
 - 仅作用于「聊天补全 → 自定义(OpenAI 兼容)」接口来源
 

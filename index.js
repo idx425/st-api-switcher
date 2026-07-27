@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '2.1.13';
+    const VERSION = '2.2.0';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -98,29 +98,55 @@
             return res.ok || res.status === 204;
         }
 
+        // 串行化密钥库写操作，避免连点切换时 purge/write 交错堆出多条
+        let secretWriteQueue = Promise.resolve();
+        function queueSecretWrite(task) {
+            const run = secretWriteQueue.then(task, task);
+            secretWriteQueue = run.then(() => undefined, () => undefined);
+            return run;
+        }
+
         async function purgeCustomSecrets() {
             // 最多扫几轮，避免异常死循环；ST/TT 都支持按 id 删除
             for (let round = 0; round < 8; round++) {
                 const list = await readCustomSecrets();
-                if (!list.length) return;
+                if (!list.length) return true;
                 for (const item of list) {
                     if (item && item.id) await deleteCustomSecret(item.id);
                     else await deleteCustomSecret();
                 }
+                await sleep(40);
             }
+            const left = await readCustomSecrets();
+            return !left.length;
         }
 
         async function writeKey(key) {
             const value = String(key || '');
-            // 先清掉 api_key_custom 槽位里已有条目，再写入唯一一条（覆盖语义）
-            await purgeCustomSecrets();
-            if (!value) return;
-            const res = await fetchTimeout('/api/secrets/write', {
-                method: 'POST',
-                headers: ctx.getRequestHeaders(),
-                body: JSON.stringify({ key: SECRET_KEY_CUSTOM, value, label: SECRET_LABEL }),
-            }, 8000);
-            if (!res.ok) throw new Error('写入密钥失败: HTTP ' + res.status);
+            return queueSecretWrite(async () => {
+                // 先清掉 api_key_custom 槽位里已有条目，再写入唯一一条（覆盖语义）
+                const cleared = await purgeCustomSecrets();
+                if (!cleared) {
+                    console.warn('[API快切] 清空 api_key_custom 未完全成功，仍尝试写入');
+                }
+                if (!value) return;
+                const res = await fetchTimeout('/api/secrets/write', {
+                    method: 'POST',
+                    headers: ctx.getRequestHeaders(),
+                    body: JSON.stringify({ key: SECRET_KEY_CUSTOM, value, label: SECRET_LABEL }),
+                }, 8000);
+                if (!res.ok) throw new Error('写入密钥失败: HTTP ' + res.status);
+
+                // 若仍有残留（竞态/旧版），再清一次多余条目，只留最新
+                const after = await readCustomSecrets();
+                if (after.length > 1) {
+                    const keep = after[after.length - 1];
+                    for (const item of after) {
+                        if (!item || !item.id || !keep || item.id === keep.id) continue;
+                        await deleteCustomSecret(item.id);
+                    }
+                }
+            });
         }
 
         /* ---------------- 核心：应用配置 ---------------- */
@@ -948,7 +974,18 @@
             const box = $('#aqs_group_picker');
             if (!box.length) return;
             box.empty();
-            for (const g of groupNames()) {
+            const names = groupNames();
+            // 表单里的分组芯片超过 4 个也分页，避免手机/平板一长串
+            const raw = settings.pages.list.__picker__ || 0;
+            const cur = clampPage(raw, names.length);
+            if (raw !== cur) {
+                settings.pages.list.__picker__ = cur;
+                save();
+            } else {
+                settings.pages.list.__picker__ = cur;
+            }
+            const sliced = slicePage(names, cur);
+            for (const g of sliced.items) {
                 $('<button type="button" class="aqs-gchip"></button>').text(g)
                     .toggleClass('aqs-gchip-on', !groupTyping && groupPick === g)
                     .on('click', () => {
@@ -965,6 +1002,12 @@
                     setTimeout(() => $('#aqs_group').trigger('focus'), 60);
                 })
                 .appendTo(box);
+            const pager = makePager(sliced.page, sliced.total, (np) => {
+                settings.pages.list.__picker__ = np;
+                save();
+                renderGroupPicker();
+            });
+            if (pager && pager.length) box.append(pager);
         }
 
         function appendPagedCards($host, items, pageKey, rerender) {
@@ -986,14 +1029,38 @@
             if (pager && pager.length) $host.append(pager);
         }
 
+        function makeGroupBox(g) {
+            const items = settings.profiles.filter((p) => p.group === g);
+            const collapsed = !!settings.groupCollapsed[g];
+            const box = $('<div class="aqs-group"></div>').toggleClass('aqs-collapsed', collapsed);
+            const head = $('<div class="aqs-group-head" title="点击展开/收起"></div>');
+            $('<i class="fa-solid fa-chevron-down aqs-group-chevron"></i>').appendTo(head);
+            $('<span class="aqs-group-name"></span>').text(g).appendTo(head);
+            if (items.some(isActive)) $('<span class="aqs-group-live" title="当前连接在此分组"></span>').appendTo(head);
+            $('<span class="aqs-group-count"></span>').text(items.length).appendTo(head);
+            head.on('click', () => {
+                settings.groupCollapsed[g] = !settings.groupCollapsed[g];
+                save();
+                renderList();
+            });
+            box.append(head);
+            const body = $('<div class="aqs-group-body"></div>');
+            // 组内站点仍按 4 条分页，避免展开后一长串
+            if (!collapsed) appendPagedCards(body, items, g, renderList);
+            box.append(body);
+            return box;
+        }
+
         function renderList() {
             const list = $('#aqs_profile_list').empty();
             const names = groupNames();
             for (const k of Object.keys(settings.groupCollapsed)) {
                 if (!names.includes(k)) delete settings.groupCollapsed[k];
             }
+            // 顶层 __main__ / 表单芯片 __picker__ / 组内页码用分组名；清掉旧键与失效键
             for (const k of Object.keys(settings.pages.list)) {
-                if (k !== '__root__' && k !== '__groups__' && !names.includes(k)) delete settings.pages.list[k];
+                if (k === '__main__' || k === '__picker__' || names.includes(k)) continue;
+                delete settings.pages.list[k];
             }
             renderGroupPicker();
             if (!settings.profiles.length) {
@@ -1001,49 +1068,35 @@
                 return;
             }
 
-            const ungrouped = settings.profiles.filter((p) => !p.group);
-            if (ungrouped.length) {
-                const wrap = $('<div class="aqs-list-section"></div>').appendTo(list);
-                appendPagedCards(wrap, ungrouped, '__root__', renderList);
-            }
+            // 顶层块 = 未分组站点卡片 + 分组头，统一按总数分页（每页最多 4 块）
+            // 这样 5 个站点 / 5 个分组 / 混合列表都不会一页堆 6+ 条
+            const blocks = [];
+            settings.profiles.filter((p) => !p.group).forEach((p) => {
+                blocks.push({ kind: 'profile', profile: p });
+            });
+            names.forEach((g) => {
+                blocks.push({ kind: 'group', name: g });
+            });
 
-            // 分组本身也分页：超过 PAGE_SIZE 个分组只显示当前页
-            const allGroups = names;
-            const rawG = settings.pages.list.__groups__ || 0;
-            const curG = clampPage(rawG, allGroups.length);
-            if (rawG !== curG) {
-                settings.pages.list.__groups__ = curG;
+            const raw = settings.pages.list.__main__ || 0;
+            const cur = clampPage(raw, blocks.length);
+            if (raw !== cur) {
+                settings.pages.list.__main__ = cur;
                 save();
             } else {
-                settings.pages.list.__groups__ = curG;
+                settings.pages.list.__main__ = cur;
             }
-            const slicedG = slicePage(allGroups, curG);
-            for (const g of slicedG.items) {
-                const items = settings.profiles.filter((p) => p.group === g);
-                const collapsed = !!settings.groupCollapsed[g];
-                const box = $('<div class="aqs-group"></div>').toggleClass('aqs-collapsed', collapsed);
-                const head = $('<div class="aqs-group-head" title="点击展开/收起"></div>');
-                $('<i class="fa-solid fa-chevron-down aqs-group-chevron"></i>').appendTo(head);
-                $('<span class="aqs-group-name"></span>').text(g).appendTo(head);
-                if (items.some(isActive)) $('<span class="aqs-group-live" title="当前连接在此分组"></span>').appendTo(head);
-                $('<span class="aqs-group-count"></span>').text(items.length).appendTo(head);
-                head.on('click', () => {
-                    settings.groupCollapsed[g] = !settings.groupCollapsed[g];
-                    save();
-                    renderList();
-                });
-                box.append(head);
-                const body = $('<div class="aqs-group-body"></div>');
-                if (!collapsed) appendPagedCards(body, items, g, renderList);
-                box.append(body);
-                list.append(box);
+            const sliced = slicePage(blocks, cur);
+            for (const b of sliced.items) {
+                if (b.kind === 'profile') list.append(profileCard(b.profile));
+                else list.append(makeGroupBox(b.name));
             }
-            const groupPager = makePager(slicedG.page, slicedG.total, (np) => {
-                settings.pages.list.__groups__ = np;
+            const pager = makePager(sliced.page, sliced.total, (np) => {
+                settings.pages.list.__main__ = np;
                 save();
                 renderList();
             });
-            if (groupPager && groupPager.length) list.append(groupPager);
+            if (pager && pager.length) list.append(pager);
         }
 
         /* renderAll 在快捷面板段重定义，同步刷新嵌入面板 */

@@ -1,5 +1,5 @@
 /* ============================================================
-   API 快切 · 高级暗色玻璃 v2.1.11
+   API 快切 · 高级暗色玻璃 v2.1.12
    设计语言：Dark Glassmorphism · 浅色主题强制可读 · 手机底部弹层
    布局：扩展设置单列卡片 + 分页（每页4条）· 模型名完整换行
    ============================================================ */
@@ -157,6 +157,7 @@
 
 .aqs-sys-bar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 9px;
     padding: 10px 13px;
@@ -169,7 +170,21 @@
     font-size: 0.76em;
     letter-spacing: 0.12em;
     position: relative;
-    overflow: hidden;
+    overflow: visible;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+}
+
+.aqs-sys-bar > * {
+    min-width: 0;
+}
+
+.aqs-sys-bar #aqs_update_btn {
+    flex: 1 1 auto;
+    white-space: normal;
+    line-height: 1.25;
+    text-align: center;
 }
 
 .aqs-sys-bar::after {
@@ -451,8 +466,17 @@
 
 .aqs-card-btns {
     display: flex;
+    flex-wrap: wrap;
     gap: 7px;
     margin-top: 11px;
+    min-width: 0;
+    max-width: 100%;
+}
+
+.aqs-card-btns > .aqs-btn,
+.aqs-card-btns > .menu_button {
+    flex: 0 1 auto;
+    min-width: 0;
 }
 
 /* ---- 分组容器 ---- */
@@ -694,8 +718,11 @@
 
 .aqs-io-btns {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     margin-top: 10px;
+    min-width: 0;
+    max-width: 100%;
 }
 
 .aqs-form-title {
@@ -720,18 +747,21 @@
 
 .aqs-model-row {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     align-items: center;
+    min-width: 0;
+    max-width: 100%;
 }
 
 .aqs-model-row .text_pole {
-    flex: 1;
+    flex: 1 1 160px;
     min-width: 0;
 }
 
 .aqs-model-row .aqs-btn {
     margin-top: 8px;
-    flex-shrink: 0;
+    flex: 0 1 auto;
     white-space: nowrap;
 }
 
@@ -1091,7 +1121,7 @@
     color: #ffffff !important;
     -webkit-text-fill-color: #ffffff !important;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 10px;
     padding: 12px 12px;
     border-radius: 11px;
@@ -1099,8 +1129,14 @@
     font-family: var(--aqs-mono);
     font-size: 0.92em;
     border: 1px solid transparent;
-    overflow: hidden;
-    white-space: nowrap;
+    overflow: visible;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: 1.35;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
     color: #ffffff !important;
     -webkit-text-fill-color: #ffffff !important;
     opacity: 1 !important;
@@ -1167,19 +1203,23 @@
 
 .aqs-api-embed-head {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 10px;
     padding: 12px 13px 8px;
+    min-width: 0;
 }
 
 .aqs-api-embed-title {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
     font-weight: 700;
     letter-spacing: 0.04em;
     min-width: 0;
+    flex: 1 1 auto;
 }
 
 .aqs-api-embed-ver {
@@ -1194,7 +1234,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    flex-shrink: 0;
+    flex: 0 0 auto;
 }
 
 .aqs-api-embed-body {
@@ -1567,4 +1607,69 @@
     color: #e2eaf8 !important;
     -webkit-text-fill-color: #e2eaf8 !important;
     opacity: 1 !important;
+}
+
+
+/* v2.1.12: phone overflow / wrap hardening */
+@media (max-width: 480px) {
+    .aqs-settings,
+    .aqs-settings .inline-drawer,
+    .aqs-settings .inline-drawer-content,
+    .aqs-settings #aqs_profile_list,
+    .aqs-settings .aqs-card,
+    .aqs-settings .aqs-form-btns,
+    .aqs-settings .aqs-io-btns,
+    .aqs-settings .aqs-model-row,
+    .aqs-settings .aqs-sys-bar,
+    #aqs_api_embed,
+    #aqs_api_embed .aqs-api-embed-head,
+    #aqs_api_embed .aqs-api-embed-body,
+    #aqs_quick_panel {
+        min-width: 0 !important;
+        max-width: 100% !important;
+        box-sizing: border-box !important;
+    }
+
+    .aqs-settings .aqs-card-btns,
+    .aqs-settings .aqs-form-btns,
+    .aqs-settings .aqs-io-btns,
+    .aqs-settings .aqs-model-row,
+    .aqs-settings .aqs-sys-bar,
+    #aqs_api_embed .aqs-api-embed-head {
+        flex-wrap: wrap !important;
+    }
+
+    .aqs-settings .aqs-card-btns > .aqs-btn,
+    .aqs-settings .aqs-card-btns > .menu_button,
+    .aqs-settings .aqs-form-btns > .aqs-btn,
+    .aqs-settings .aqs-form-btns > .menu_button,
+    .aqs-settings .aqs-io-btns > .aqs-btn,
+    .aqs-settings .aqs-io-btns > .menu_button {
+        flex: 1 1 auto !important;
+        min-width: 0 !important;
+        white-space: normal !important;
+        line-height: 1.25 !important;
+    }
+
+    #aqs_model_modal .aqs-modal-item {
+        white-space: normal !important;
+        overflow: visible !important;
+        overflow-wrap: anywhere !important;
+        word-break: break-word !important;
+        align-items: flex-start !important;
+    }
+
+    #aqs_quick_panel {
+        left: 6px !important;
+        right: 6px !important;
+        width: auto !important;
+        max-width: calc(100vw - 12px) !important;
+        min-width: 0 !important;
+        max-height: min(60dvh, 60vh) !important;
+    }
+
+    .aqs-settings .aqs-note {
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
 }

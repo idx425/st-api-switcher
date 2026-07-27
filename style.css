@@ -1680,3 +1680,418 @@
         word-break: break-word;
     }
 }
+
+/* ============================================================
+   v2.3.2 浅色主题全面加深（最终覆盖层）
+   目标：浅色主题下表单/输入/按钮/芯片/备注全部暗底亮字，
+   禁止半透明白底撞浅底。保留 inline-drawer 可整块收起。
+   ============================================================ */
+
+/* 扩展设置：整块暗色岛 */
+.aqs-settings,
+.aqs-settings > .inline-drawer {
+    color: #f3f7ff !important;
+    -webkit-text-fill-color: #f3f7ff !important;
+}
+
+.aqs-settings .inline-drawer-header {
+    background: #121a2a !important;
+    background-color: #121a2a !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    border: 1px solid rgb(255 255 255 / 16%) !important;
+    border-radius: 12px !important;
+    padding: 10px 12px !important;
+}
+
+.aqs-settings .inline-drawer-header b,
+.aqs-settings .inline-drawer-header b *,
+.aqs-settings .inline-drawer-icon {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    opacity: 1 !important;
+}
+
+.aqs-settings .inline-drawer-content {
+    background: #0f1522 !important;
+    background-color: #0f1522 !important;
+    color: #f3f7ff !important;
+    -webkit-text-fill-color: #f3f7ff !important;
+    border: 1px solid rgb(255 255 255 / 14%) !important;
+    border-top: none !important;
+    border-radius: 0 0 14px 14px !important;
+    padding: 12px 12px 16px !important;
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 4%) !important;
+}
+
+/* 标题 / 标签 / 备注 */
+.aqs-settings .aqs-form-title,
+.aqs-settings #aqs_form_title {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    opacity: 1 !important;
+    font-weight: 700 !important;
+}
+
+.aqs-settings .aqs-field-label {
+    color: #e4ecf8 !important;
+    -webkit-text-fill-color: #e4ecf8 !important;
+    opacity: 1 !important;
+}
+
+.aqs-settings .aqs-note,
+.aqs-settings .aqs-empty,
+.aqs-settings .aqs-sys-ver,
+.aqs-settings .aqs-pager-info {
+    color: #d5deee !important;
+    -webkit-text-fill-color: #d5deee !important;
+    opacity: 1 !important;
+}
+
+/* 输入框：实心暗底 + 亮字（盖过酒馆 .text_pole 浅色） */
+.aqs-settings input.text_pole,
+.aqs-settings .text_pole,
+.aqs-settings textarea.text_pole,
+.aqs-settings select.text_pole,
+.aqs-settings #aqs_name,
+.aqs-settings #aqs_url,
+.aqs-settings #aqs_key,
+.aqs-settings #aqs_model,
+.aqs-settings #aqs_group,
+#aqs_model_modal input.text_pole,
+#aqs_model_modal .aqs-modal-filter {
+    background: #1a2438 !important;
+    background-color: #1a2438 !important;
+    background-image: none !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    border: 1px solid rgb(255 255 255 / 28%) !important;
+    border-radius: 11px !important;
+    opacity: 1 !important;
+    caret-color: #22d3ee !important;
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 4%) !important;
+    filter: none !important;
+    mix-blend-mode: normal !important;
+}
+
+.aqs-settings input.text_pole:focus,
+.aqs-settings .text_pole:focus,
+.aqs-settings #aqs_name:focus,
+.aqs-settings #aqs_url:focus,
+.aqs-settings #aqs_key:focus,
+.aqs-settings #aqs_model:focus,
+.aqs-settings #aqs_group:focus,
+#aqs_model_modal input.text_pole:focus,
+#aqs_model_modal .aqs-modal-filter:focus {
+    background: #202c44 !important;
+    background-color: #202c44 !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    border-color: rgb(34 211 238 / 70%) !important;
+    box-shadow: 0 0 0 2px rgb(34 211 238 / 22%), 0 0 14px rgb(34 211 238 / 18%) !important;
+}
+
+.aqs-settings input.text_pole::placeholder,
+.aqs-settings .text_pole::placeholder,
+.aqs-settings #aqs_name::placeholder,
+.aqs-settings #aqs_url::placeholder,
+.aqs-settings #aqs_key::placeholder,
+.aqs-settings #aqs_model::placeholder,
+.aqs-settings #aqs_group::placeholder,
+#aqs_model_modal input.text_pole::placeholder,
+#aqs_model_modal .aqs-modal-filter::placeholder {
+    color: #c5d0e4 !important;
+    -webkit-text-fill-color: #c5d0e4 !important;
+    opacity: 1 !important;
+}
+
+/* 按钮：实心底，禁止半透明白底 */
+.aqs-settings .menu_button,
+.aqs-settings .aqs-btn,
+.aqs-settings #aqs_update_btn,
+.aqs-settings #aqs_save,
+.aqs-settings #aqs_cancel_edit,
+.aqs-settings #aqs_export,
+.aqs-settings #aqs_import,
+.aqs-settings #aqs_fetch_models {
+    background: #24314a !important;
+    background-color: #24314a !important;
+    background-image: none !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    border: 1px solid rgb(255 255 255 / 26%) !important;
+    opacity: 1 !important;
+    text-shadow: none !important;
+    filter: none !important;
+    mix-blend-mode: normal !important;
+    box-shadow: 0 1px 0 rgb(255 255 255 / 6%) inset !important;
+}
+
+.aqs-settings .menu_button i,
+.aqs-settings .aqs-btn i,
+.aqs-settings #aqs_update_btn i,
+.aqs-settings #aqs_save i,
+.aqs-settings #aqs_export i,
+.aqs-settings #aqs_import i,
+.aqs-settings #aqs_fetch_models i {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    opacity: 1 !important;
+}
+
+.aqs-settings .aqs-btn-primary,
+.aqs-settings #aqs_save.aqs-btn-primary,
+.aqs-settings #aqs_save {
+    background: linear-gradient(120deg, #0e7490 0%, #4338ca 100%) !important;
+    background-color: #0e7490 !important;
+    border-color: rgb(103 232 249 / 50%) !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    font-weight: 700 !important;
+    box-shadow: 0 4px 16px rgb(34 211 238 / 22%) !important;
+}
+
+.aqs-settings .menu_button:hover,
+.aqs-settings .aqs-btn:hover {
+    background: #2d3d5c !important;
+    background-color: #2d3d5c !important;
+    border-color: rgb(34 211 238 / 55%) !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
+
+.aqs-settings .aqs-btn-primary:hover,
+.aqs-settings #aqs_save:hover {
+    background: linear-gradient(120deg, #0891b2 0%, #4f46e5 100%) !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
+
+.aqs-settings #aqs_update_btn.aqs-update-avail {
+    background: linear-gradient(120deg, #0e7490, #4338ca) !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    border-color: rgb(103 232 249 / 55%) !important;
+}
+
+/* 分组芯片 */
+.aqs-settings .aqs-gchip,
+.aqs-settings #aqs_group_picker .aqs-gchip {
+    background: #1e2a40 !important;
+    background-color: #1e2a40 !important;
+    color: #f0f5ff !important;
+    -webkit-text-fill-color: #f0f5ff !important;
+    border: 1px solid rgb(255 255 255 / 28%) !important;
+    opacity: 1 !important;
+    filter: none !important;
+}
+
+.aqs-settings .aqs-gchip-on,
+.aqs-settings #aqs_group_picker .aqs-gchip-on {
+    background: linear-gradient(120deg, #0e7490, #4338ca) !important;
+    background-color: #0e7490 !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    border-color: rgb(103 232 249 / 60%) !important;
+    box-shadow: 0 0 14px rgb(34 211 238 / 25%) !important;
+    opacity: 1 !important;
+}
+
+.aqs-settings .aqs-gchip-add {
+    background: #152033 !important;
+    background-color: #152033 !important;
+    color: #e2eaf8 !important;
+    -webkit-text-fill-color: #e2eaf8 !important;
+    border-style: dashed !important;
+    opacity: 1 !important;
+}
+
+/* 分页 */
+.aqs-settings .aqs-pager-btn,
+#aqs_api_embed .aqs-pager-btn,
+#aqs_quick_panel .aqs-pager-btn {
+    background: #24314a !important;
+    background-color: #24314a !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    border: 1px solid rgb(255 255 255 / 24%) !important;
+    opacity: 1 !important;
+}
+
+/* 系统栏本身再锁一层 */
+.aqs-settings .aqs-sys-bar {
+    background: #121826 !important;
+    background-color: #121826 !important;
+    color: #f3f7ff !important;
+    border: 1px solid rgb(255 255 255 / 16%) !important;
+}
+
+/* 插头嵌入 / 快捷面板：防止主题泄漏 */
+#aqs_api_embed {
+    background: #121826 !important;
+    background-color: #121826 !important;
+    border: 1px solid rgb(255 255 255 / 16%) !important;
+    color: #f3f7ff !important;
+    -webkit-text-fill-color: #f3f7ff !important;
+}
+
+#aqs_api_embed .aqs-api-embed-head,
+#aqs_api_embed .aqs-api-embed-body,
+#aqs_api_embed .aqs-api-embed-foot {
+    background: transparent !important;
+    color: #f3f7ff !important;
+    -webkit-text-fill-color: #f3f7ff !important;
+}
+
+#aqs_api_embed .aqs-api-embed-title,
+#aqs_api_embed .aqs-api-embed-title span,
+#aqs_api_embed .aqs-qp-name,
+#aqs_api_embed .aqs-qp-item {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    opacity: 1 !important;
+}
+
+#aqs_api_embed .aqs-qp-item {
+    background: #1a2438 !important;
+    background-color: #1a2438 !important;
+    border: 1px solid rgb(255 255 255 / 14%) !important;
+}
+
+#aqs_api_embed .aqs-qp-model,
+#aqs_api_embed .aqs-api-embed-ver,
+#aqs_api_embed .aqs-note,
+#aqs_api_embed .aqs-empty {
+    color: #d5deee !important;
+    -webkit-text-fill-color: #d5deee !important;
+    opacity: 1 !important;
+}
+
+#aqs_api_embed .menu_button,
+#aqs_api_embed .aqs-btn,
+#aqs_quick_panel .menu_button,
+#aqs_quick_panel .aqs-btn {
+    background: #24314a !important;
+    background-color: #24314a !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    border: 1px solid rgb(255 255 255 / 22%) !important;
+    opacity: 1 !important;
+}
+
+#aqs_api_embed .aqs-chip,
+#aqs_api_embed .aqs-chip-dim {
+    background: #1e2a40 !important;
+    background-color: #1e2a40 !important;
+    color: #e2eaf8 !important;
+    -webkit-text-fill-color: #e2eaf8 !important;
+    border-color: rgb(255 255 255 / 18%) !important;
+    opacity: 1 !important;
+}
+
+#aqs_quick_panel {
+    background: #121826 !important;
+    background-color: #121826 !important;
+    border: 1px solid rgb(255 255 255 / 18%) !important;
+    color: #f3f7ff !important;
+}
+
+#aqs_quick_panel .aqs-qp-item {
+    background: #1a2438 !important;
+    background-color: #1a2438 !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    border: 1px solid rgb(255 255 255 / 14%) !important;
+}
+
+#aqs_quick_panel .aqs-qp-name,
+#aqs_quick_panel .aqs-qp-title {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    opacity: 1 !important;
+}
+
+#aqs_quick_panel .aqs-qp-model,
+#aqs_quick_panel .aqs-qp-group,
+#aqs_quick_panel .aqs-empty {
+    color: #d5deee !important;
+    -webkit-text-fill-color: #d5deee !important;
+    opacity: 1 !important;
+}
+
+/* 模型弹窗 */
+#aqs_model_modal .aqs-modal-box {
+    background: #0f1522 !important;
+    background-color: #0f1522 !important;
+    color: #ffffff !important;
+}
+
+#aqs_model_modal .aqs-modal-item {
+    background: #1a2438 !important;
+    background-color: #1a2438 !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    border: 1px solid rgb(255 255 255 / 12%) !important;
+    opacity: 1 !important;
+}
+
+#aqs_model_modal .aqs-modal-close {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    opacity: 1 !important;
+}
+
+#aqs_model_modal .aqs-empty,
+#aqs_model_modal .aqs-modal-loading {
+    color: #d5deee !important;
+    -webkit-text-fill-color: #d5deee !important;
+    opacity: 1 !important;
+}
+
+#aqs_model_modal .aqs-btn,
+#aqs_model_modal .menu_button {
+    background: #24314a !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    border: 1px solid rgb(255 255 255 / 22%) !important;
+    opacity: 1 !important;
+}
+
+/* 卡片/分组头在浅色主题下也锁实色 */
+.aqs-settings .aqs-card,
+.aqs-settings .aqs-group,
+.aqs-settings .aqs-sys-bar {
+    background-color: #121826 !important;
+    color: #f3f7ff !important;
+}
+
+.aqs-settings .aqs-card-name,
+.aqs-settings .aqs-group-name {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    opacity: 1 !important;
+}
+
+.aqs-settings .aqs-card-url,
+.aqs-settings .aqs-chip,
+.aqs-settings .aqs-group-count {
+    color: #d5deee !important;
+    -webkit-text-fill-color: #d5deee !important;
+    opacity: 1 !important;
+}
+
+.aqs-settings .aqs-card .menu_button,
+.aqs-settings .aqs-card .aqs-btn {
+    background: #24314a !important;
+    background-color: #24314a !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    border: 1px solid rgb(255 255 255 / 24%) !important;
+    opacity: 1 !important;
+}
+
+.aqs-settings .aqs-card .aqs-btn-primary {
+    background: linear-gradient(120deg, #0e7490, #4338ca) !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}

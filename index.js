@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '2.3.2';
+    const VERSION = '2.3.3';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -1346,10 +1346,170 @@
             const pager = makePager(sliced.page, sliced.total, (np) => {
                 settings.pages[key] = np;
                 save();
-                if (key === 'quick') renderQuickPanel();
-                else renderApiEmbed();
+                if (key === 'quick') {
+                    renderQuickPanel();
+                    const anchor = document.getElementById('aqs_wand_btn');
+                    requestAnimationFrame(() => layoutQuickPanel(anchor));
+                } else renderApiEmbed();
             });
             if (pager && pager.length) $root.append(pager);
+        }
+
+        function layoutQuickPanel(anchorEl) {
+            const panel = $('#aqs_quick_panel');
+            const el = panel[0];
+            if (!el || !panel.is(':visible')) return;
+            if (el.parentElement !== document.documentElement) {
+                document.documentElement.appendChild(el);
+            }
+
+            const { vw, vh } = viewportSize();
+            const isPhone = vw < 700;
+            const isTablet = vw >= 700 && vw < 1100;
+            const pad = isPhone ? 8 : 12;
+            const gap = 8;
+
+            // 清掉 CSS 默认 bottom/left/animation/transform，避免和 top 打架、被菜单半透明层盖住
+            el.style.cssText = [
+                'display:block',
+                'position:fixed',
+                'z-index:2147483646',
+                'visibility:visible',
+                'opacity:1',
+                'pointer-events:auto',
+                'box-sizing:border-box',
+                'transform:none',
+                'animation:none',
+                'margin:0',
+                'isolation:isolate',
+                'bottom:auto',
+                'right:auto',
+            ].map((s) => s + ' !important').join(';') + ';';
+
+            const maxW = Math.min(isPhone ? Math.min(vw - pad * 2, 360) : (isTablet ? 380 : 400), vw - pad * 2);
+            const minW = Math.min(260, maxW);
+            const maxH = Math.max(160, Math.min(Math.round(vh * (isPhone ? 0.55 : 0.52)), vh - pad * 2));
+            el.style.setProperty('width', maxW + 'px', 'important');
+            el.style.setProperty('min-width', minW + 'px', 'important');
+            el.style.setProperty('max-width', maxW + 'px', 'important');
+            el.style.setProperty('max-height', maxH + 'px', 'important');
+            el.style.setProperty('overflow-y', 'auto', 'important');
+            el.style.setProperty('overflow-x', 'hidden', 'important');
+            el.style.setProperty('-webkit-overflow-scrolling', 'touch', 'important');
+            el.style.setProperty('overscroll-behavior', 'contain', 'important');
+            el.style.setProperty('touch-action', 'pan-y', 'important');
+
+            // 临时放到安全区再量高，避免 hidden/动画未完成时高度飘
+            el.style.setProperty('top', pad + 'px', 'important');
+            el.style.setProperty('left', pad + 'px', 'important');
+            void el.offsetHeight;
+            const ph = Math.max(120, Math.min(el.scrollHeight || el.offsetHeight || 200, maxH));
+            const pw = el.offsetWidth || maxW;
+
+            let menuRect = null;
+            if (anchorEl && anchorEl.getBoundingClientRect) {
+                try {
+                    const menu = (anchorEl.closest && anchorEl.closest(
+                        '#extensionsMenu, #extensions_menu, .extensions_menu, .list-group, [id*="extensionsMenu"]'
+                    )) || anchorEl;
+                    menuRect = menu.getBoundingClientRect();
+                } catch {
+                    menuRect = anchorEl.getBoundingClientRect();
+                }
+            }
+
+            let top;
+            let left;
+            if (menuRect && menuRect.width) {
+                const rightOf = menuRect.right + gap;
+                const leftOf = menuRect.left - pw - gap;
+                const below = menuRect.bottom + gap;
+                const above = menuRect.top - ph - gap;
+                // 优先：菜单右侧（平板最容易被菜单半透明层盖住的就是「叠在菜单上」）
+                if (rightOf + pw <= vw - pad) {
+                    left = rightOf;
+                    top = Math.max(pad, Math.min(menuRect.top, vh - ph - pad));
+                } else if (below + Math.min(ph, 120) <= vh - pad) {
+                    // 菜单下方：整块躲开菜单纵向范围
+                    left = Math.max(pad, Math.min(menuRect.left, vw - pw - pad));
+                    top = below;
+                } else if (leftOf >= pad) {
+                    left = leftOf;
+                    top = Math.max(pad, Math.min(menuRect.top, vh - ph - pad));
+                } else if (above >= pad) {
+                    left = Math.max(pad, Math.min(menuRect.left, vw - pw - pad));
+                    top = above;
+                } else {
+                    left = pad;
+                    top = Math.max(pad, Math.min(vh - ph - pad, below));
+                }
+            } else {
+                top = Math.max(pad, vh - ph - (isPhone ? 88 : 96));
+                left = pad;
+            }
+
+            top = Math.max(pad, Math.min(top, vh - Math.min(ph, maxH) - pad));
+            left = Math.max(pad, Math.min(left, vw - pw - pad));
+
+            // 最后再做一次与菜单矩形的碰撞检测；仍重叠则硬推到右侧/下方
+            if (menuRect && menuRect.width) {
+                const intersects = !(
+                    left + pw <= menuRect.left - 2 ||
+                    left >= menuRect.right + 2 ||
+                    top + ph <= menuRect.top - 2 ||
+                    top >= menuRect.bottom + 2
+                );
+                if (intersects) {
+                    if (menuRect.right + gap + pw <= vw - pad) {
+                        left = menuRect.right + gap;
+                        top = Math.max(pad, Math.min(menuRect.top, vh - ph - pad));
+                    } else if (menuRect.bottom + gap + Math.min(ph, 140) <= vh - pad) {
+                        top = menuRect.bottom + gap;
+                        left = Math.max(pad, Math.min(left, vw - pw - pad));
+                    } else {
+                        // 实在挤：贴视口右下，仍保持最高 z-index
+                        left = Math.max(pad, vw - pw - pad);
+                        top = Math.max(pad, vh - ph - pad);
+                    }
+                    top = Math.max(pad, Math.min(top, vh - Math.min(ph, maxH) - pad));
+                    left = Math.max(pad, Math.min(left, vw - pw - pad));
+                }
+            }
+
+            el.style.setProperty('top', Math.round(top) + 'px', 'important');
+            el.style.setProperty('left', Math.round(left) + 'px', 'important');
+            el.style.setProperty('right', 'auto', 'important');
+            el.style.setProperty('bottom', 'auto', 'important');
+            el.setAttribute('data-aqs-qp-layout', vw + 'x' + vh + '@' + Math.round(top) + ',' + Math.round(left));
+        }
+
+        function openQuickPanel(anchorEl) {
+            const panel = $('#aqs_quick_panel');
+            if (!panel.length) return;
+            // 先抬到 html 根再渲染/显示，避免第一次打开仍在 body 里被菜单层盖住
+            if (panel[0].parentElement !== document.documentElement) {
+                document.documentElement.appendChild(panel[0]);
+            }
+            renderQuickPanel();
+            panel.show();
+            const relayout = () => {
+                try { layoutQuickPanel(anchorEl); } catch (e) { console.error('[API快切] qp layout', e); }
+            };
+            relayout();
+            requestAnimationFrame(() => {
+                relayout();
+                requestAnimationFrame(relayout);
+            });
+            // 触屏/WebView 首帧内容高度常偏小，多拍几次消除「点一次歪、点两次才正」
+            setTimeout(relayout, 16);
+            setTimeout(relayout, 50);
+            setTimeout(relayout, 120);
+            setTimeout(relayout, 280);
+            setTimeout(relayout, 480);
+        }
+
+        function closeQuickPanel() {
+            $('#aqs_quick_panel').hide();
         }
 
         function renderQuickPanel() {
@@ -1459,22 +1619,16 @@
                     btn.data('aqs-touch-lock', 1);
                     setTimeout(() => btn.removeData('aqs-touch-lock'), 350);
                 }
+                e.preventDefault();
                 e.stopPropagation();
+                if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
                 const panel = $('#aqs_quick_panel');
                 if (panel.is(':visible')) {
-                    panel.hide();
+                    closeQuickPanel();
                     return;
                 }
-                renderQuickPanel();
-                panel.show();
-                // 打开后把面板尽量贴近按钮
-                try {
-                    const r = this.getBoundingClientRect();
-                    const ph = panel.outerHeight() || 200;
-                    const top = Math.max(8, Math.min(window.innerHeight - ph - 8, r.top - ph - 8));
-                    const left = Math.max(8, Math.min(window.innerWidth - (panel.outerWidth() || 280) - 8, r.left));
-                    panel.css({ top: top + 'px', left: left + 'px', bottom: 'auto' });
-                } catch { /* ignore */ }
+                // 锚点用按钮本身；布局时面板会抬到菜单之上，避免被半透明菜单层挡住
+                openQuickPanel(this);
             });
 
             // 与其他扩展一致：直接 append 到 #extensionsMenu
@@ -1484,12 +1638,26 @@
 
         function ensureFloatingPanel() {
             if ($('#aqs_quick_panel').length) return;
-            $('body').append('<div id="aqs_quick_panel" style="display:none;"></div>');
+            // 挂到 <html>，与模型弹窗一致，避免被 #extensionsMenu 的 stacking / overflow 裁切遮挡
+            $(document.documentElement).append('<div id="aqs_quick_panel" style="display:none;"></div>');
             $(document).on('mousedown.aqs_qp touchstart.aqs_qp', (e) => {
                 const $t = $(e.target);
                 if ($t.closest('#aqs_quick_panel, #aqs_wand_btn').length) return;
-                $('#aqs_quick_panel').hide();
+                closeQuickPanel();
             });
+            // 视口变化时若面板开着，重算位置（旋转平板最容易歪）
+            const onVp = () => {
+                const panel = $('#aqs_quick_panel');
+                if (!panel.is(':visible')) return;
+                const anchor = document.getElementById('aqs_wand_btn');
+                layoutQuickPanel(anchor);
+            };
+            window.addEventListener('resize', onVp);
+            window.addEventListener('orientationchange', onVp);
+            if (window.visualViewport) {
+                window.visualViewport.addEventListener('resize', onVp);
+                window.visualViewport.addEventListener('scroll', onVp);
+            }
         }
 
         function watchUiHosts() {

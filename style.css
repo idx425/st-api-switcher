@@ -814,14 +814,19 @@
 /* ---- 快捷面板 ---- */
 
 #aqs_quick_panel {
-    position: fixed;
-    bottom: 90px;
+    position: fixed !important;
+    /* top/left 由 JS 按魔法棒菜单矩形计算；不要用 bottom 默认值，否则首帧会和 top 打架 */
+    top: auto;
     left: 10px;
-    z-index: 30000;
+    bottom: auto !important;
+    right: auto !important;
+    z-index: 2147483646 !important;
+    isolation: isolate;
     min-width: min(300px, calc(100vw - 16px));
     width: min(360px, calc(100vw - 16px));
     max-width: min(400px, calc(100vw - 16px));
     max-height: 55vh;
+    max-height: 55dvh;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
@@ -835,7 +840,10 @@
     color: var(--aqs-fg) !important;
     box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%), 0 18px 48px rgb(0 0 0 / 55%);
     padding: 10px;
-    animation: aqs-in 0.22s var(--aqs-ease);
+    /* 不用 transform 入场动画：fixed + transform 在部分 WebView 会另开层叠上下文，被菜单挡住 */
+    animation: none;
+    transform: none !important;
+    pointer-events: auto !important;
 }
 
 #aqs_quick_panel::before {
@@ -1309,7 +1317,7 @@
 
     #aqs_quick_panel {
         max-width: calc(100vw - 12px);
-        left: 6px !important;
+        /* left/top 仍由 JS 决定，避免手机端强制 left 把面板塞回菜单底下 */
         max-height: 60vh;
         max-height: 60dvh;
     }
@@ -1630,8 +1638,7 @@
     .aqs-settings .aqs-sys-bar,
     #aqs_api_embed,
     #aqs_api_embed .aqs-api-embed-head,
-    #aqs_api_embed .aqs-api-embed-body,
-    #aqs_quick_panel {
+    #aqs_api_embed .aqs-api-embed-body {
         min-width: 0 !important;
         max-width: 100% !important;
         box-sizing: border-box !important;
@@ -1667,11 +1674,8 @@
     }
 
     #aqs_quick_panel {
-        left: 6px !important;
-        right: 6px !important;
-        width: auto !important;
+        /* 位置/宽度完全交给 JS layoutQuickPanel，避免强制 left/right 把面板拉回菜单底下 */
         max-width: calc(100vw - 12px) !important;
-        min-width: 0 !important;
         max-height: min(60dvh, 60vh) !important;
     }
 

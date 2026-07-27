@@ -1,5 +1,5 @@
 /* ============================================================
-   API 快切 · 高级暗色玻璃 v2.1.12
+   API 快切 · 高级暗色玻璃 v3.0.0
    设计语言：Dark Glassmorphism · 浅色主题强制可读 · 手机底部弹层
    布局：扩展设置单列卡片 + 分页（每页4条）· 模型名完整换行
    ============================================================ */
@@ -862,18 +862,68 @@
 }
 
 .aqs-qp-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
     font-family: var(--aqs-mono);
     font-weight: 700;
     letter-spacing: 0.16em;
     font-size: 0.8em;
-    padding: 7px 9px 11px;
+    padding: 7px 4px 11px 9px;
+    border-bottom: 1px solid var(--aqs-line);
+    margin-bottom: 6px;
+    color: #e8f0ff !important;
+    -webkit-text-fill-color: #e8f0ff !important;
+    background: none !important;
+    -webkit-background-clip: border-box;
+    background-clip: border-box;
+}
+
+.aqs-qp-title-text {
+    min-width: 0;
+    flex: 1 1 auto;
     background: var(--aqs-grad);
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent !important;
     -webkit-text-fill-color: transparent !important;
-    border-bottom: 1px solid var(--aqs-line);
-    margin-bottom: 6px;
+    pointer-events: none;
+}
+
+.aqs-qp-close {
+    flex: 0 0 auto;
+    appearance: none;
+    -webkit-appearance: none;
+    border: 1px solid rgb(255 255 255 / 16%);
+    background: rgb(255 255 255 / 8%);
+    color: #f3f7ff !important;
+    -webkit-text-fill-color: #f3f7ff !important;
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    min-height: 30px;
+    border-radius: 9px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+    line-height: 1;
+    font-size: 0.95em;
+    touch-action: manipulation;
+}
+
+.aqs-qp-close:hover,
+.aqs-qp-close:active {
+    background: rgb(255 255 255 / 16%);
+    border-color: rgb(255 255 255 / 28%);
+}
+
+.aqs-qp-close:focus-visible {
+    outline: 2px solid rgb(34 211 238 / 70%);
+    outline-offset: 1px;
 }
 
 .aqs-qp-group {
@@ -1318,8 +1368,16 @@
     #aqs_quick_panel {
         max-width: calc(100vw - 12px);
         /* left/top 仍由 JS 决定，避免手机端强制 left 把面板塞回菜单底下 */
-        max-height: 60vh;
-        max-height: 60dvh;
+        max-height: min(60dvh, calc(100dvh - 24px - env(safe-area-inset-bottom, 0px)));
+        max-height: min(60vh, calc(100vh - 24px));
+        padding-bottom: max(8px, env(safe-area-inset-bottom, 0px));
+    }
+
+    .aqs-qp-close {
+        width: 34px;
+        height: 34px;
+        min-width: 34px;
+        min-height: 34px;
     }
 
     #aqs_api_embed .aqs-api-embed-body {
@@ -2098,4 +2156,17 @@
     background: linear-gradient(120deg, #0e7490, #4338ca) !important;
     color: #ffffff !important;
     -webkit-text-fill-color: #ffffff !important;
+}
+
+
+/* v3.0.0: 快捷面板关闭按钮可读性 */
+#aqs_quick_panel .aqs-qp-close {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+    background: #243147 !important;
+    border-color: rgb(255 255 255 / 22%) !important;
+}
+#aqs_quick_panel .aqs-qp-title {
+    color: #e8f0ff !important;
+    -webkit-text-fill-color: #e8f0ff !important;
 }

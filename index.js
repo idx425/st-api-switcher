@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '2.3.3';
+    const VERSION = '3.0.0';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -231,7 +231,11 @@
         }
 
         /* ---------------- 核心：应用配置 ---------------- */
+        let applyBusy = false;
+
         async function applyProfile(p) {
+            if (applyBusy) return false;
+            applyBusy = true;
             try {
                 if (!$('#custom_api_url_text').length) {
                     throw new Error('未找到自定义接口输入框，请确认酒馆版本（需 1.12+）');
@@ -263,9 +267,13 @@
 
                 toastr.success('已切换到「' + p.name + '」', 'API 快切');
                 renderAll();
+                return true;
             } catch (err) {
                 console.error('[API快切]', err);
                 toastr.error(String(err && err.message || err), 'API 快切失败');
+                return false;
+            } finally {
+                applyBusy = false;
             }
         }
 
@@ -1322,9 +1330,9 @@
                 item.on('click', async (e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    if (closeOnClick) $('#aqs_quick_panel').hide();
+                    if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+                    // 快捷面板保持打开，便于连续切换；点面板外 / 标题叉号 / Esc 才关闭
                     await applyProfile(p);
-                    renderAll();
                 });
                 $root.append(item);
             };
@@ -1515,8 +1523,28 @@
         function renderQuickPanel() {
             const panel = $('#aqs_quick_panel');
             if (!panel.length) return;
-            buildProfileItems(panel, { closeOnClick: true, pageKey: 'quick' });
-            panel.prepend($('<div class="aqs-qp-title"><i class="fa-solid fa-shuffle"></i> API·SWITCH</div>'));
+            buildProfileItems(panel, { closeOnClick: false, pageKey: 'quick' });
+            const $title = $('<div class="aqs-qp-title"></div>');
+            $title.append($('<span class="aqs-qp-title-text"><i class="fa-solid fa-shuffle"></i> API·SWITCH</span>'));
+            const $close = $('<button type="button" class="aqs-qp-close" title="关闭" aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>');
+            $close.on('pointerup click', (e) => {
+                if (e.type === 'click' && $close.data('aqs-ptr-handled')) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return;
+                }
+                if (e.type === 'pointerup') {
+                    if (e.pointerType === 'mouse' && e.button !== 0) return;
+                    $close.data('aqs-ptr-handled', 1);
+                    setTimeout(() => $close.removeData('aqs-ptr-handled'), 400);
+                }
+                e.preventDefault();
+                e.stopPropagation();
+                if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+                closeQuickPanel();
+            });
+            $title.append($close);
+            panel.prepend($title);
         }
 
         function renderApiEmbed() {
@@ -1611,13 +1639,17 @@
                 '<i class="fa-solid fa-shuffle extensionsMenuExtensionButton"></i>' +
                 '<span class="aqs-wand-label">API 快切</span></div>'
             );
-            btn.on('click touchend', function (e) {
-                // touchend 在部分安卓 WebView 比 click 更稳；防双触发
-                if (e.type === 'touchend') {
+            btn.on('pointerup click', function (e) {
+                // 手机端优先 pointerup；忽略后续合成 click，避免开了又关
+                if (e.type === 'click' && btn.data('aqs-ptr-handled')) {
                     e.preventDefault();
-                    if (btn.data('aqs-touch-lock')) return;
-                    btn.data('aqs-touch-lock', 1);
-                    setTimeout(() => btn.removeData('aqs-touch-lock'), 350);
+                    e.stopPropagation();
+                    return;
+                }
+                if (e.type === 'pointerup') {
+                    if (e.pointerType === 'mouse' && e.button !== 0) return;
+                    btn.data('aqs-ptr-handled', 1);
+                    setTimeout(() => btn.removeData('aqs-ptr-handled'), 400);
                 }
                 e.preventDefault();
                 e.stopPropagation();
@@ -1640,10 +1672,18 @@
             if ($('#aqs_quick_panel').length) return;
             // 挂到 <html>，与模型弹窗一致，避免被 #extensionsMenu 的 stacking / overflow 裁切遮挡
             $(document.documentElement).append('<div id="aqs_quick_panel" style="display:none;"></div>');
-            $(document).on('mousedown.aqs_qp touchstart.aqs_qp', (e) => {
+            // pointerdown 比 mousedown/touchstart 更稳；点面板外才关
+            $(document).on('pointerdown.aqs_qp touchstart.aqs_qp', (e) => {
+                // touchstart 兜底老 WebView；pointer 事件下 touchstart 可能连发，用 data 去重
+                if (e.type === 'touchstart' && window.PointerEvent) return;
                 const $t = $(e.target);
                 if ($t.closest('#aqs_quick_panel, #aqs_wand_btn').length) return;
                 closeQuickPanel();
+            });
+            $(document).on('keydown.aqs_qp', (e) => {
+                if (e.key === 'Escape' && $('#aqs_quick_panel').is(':visible')) {
+                    closeQuickPanel();
+                }
             });
             // 视口变化时若面板开着，重算位置（旋转平板最容易歪）
             const onVp = () => {

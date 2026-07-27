@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '2.1.10';
+    const VERSION = '2.1.11';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -36,6 +36,10 @@
         const save = () => ctx.saveSettingsDebounced();
         const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
         if (!settings.groupCollapsed || typeof settings.groupCollapsed !== 'object') settings.groupCollapsed = {};
+        if (!settings.pages || typeof settings.pages !== 'object') settings.pages = {};
+        if (!settings.pages.list || typeof settings.pages.list !== 'object') settings.pages.list = {};
+        if (typeof settings.pages.embed !== 'number') settings.pages.embed = 0;
+        if (typeof settings.pages.quick !== 'number') settings.pages.quick = 0;
         settings.profiles.forEach((p) => {
             if (!p.id) p.id = uid();
             if (typeof p.group !== 'string') p.group = '';
@@ -762,6 +766,57 @@
             doFetch();
         }
 
+        /* ---------------- 分页 / 列表 ---------------- */
+        const PAGE_SIZE = 4;
+
+        function pageCount(total) {
+            return Math.max(1, Math.ceil(Math.max(0, total) / PAGE_SIZE));
+        }
+
+        function clampPage(page, total) {
+            return Math.min(Math.max(0, page | 0), pageCount(total) - 1);
+        }
+
+        function slicePage(items, page) {
+            const p = clampPage(page, items.length);
+            const start = p * PAGE_SIZE;
+            return { page: p, items: items.slice(start, start + PAGE_SIZE), total: items.length, pages: pageCount(items.length) };
+        }
+
+        function makePager(page, total, onChange) {
+            const pages = pageCount(total);
+            if (total <= PAGE_SIZE) return $();
+            const bar = $('<div class="aqs-pager"></div>');
+            const prev = $('<button type="button" class="menu_button aqs-btn aqs-pager-btn" title="上一页"><i class="fa-solid fa-chevron-left"></i></button>')
+                .prop('disabled', page <= 0)
+                .on('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (page <= 0) return;
+                    onChange(page - 1);
+                });
+            const info = $('<span class="aqs-pager-info"></span>').text((page + 1) + ' / ' + pages + ' · ' + total);
+            const next = $('<button type="button" class="menu_button aqs-btn aqs-pager-btn" title="下一页"><i class="fa-solid fa-chevron-right"></i></button>')
+                .prop('disabled', page >= pages - 1)
+                .on('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (page >= pages - 1) return;
+                    onChange(page + 1);
+                });
+            bar.append(prev, info, next);
+            return bar;
+        }
+
+        function orderedProfiles() {
+            const out = [];
+            settings.profiles.filter((p) => !p.group).forEach((p) => out.push(p));
+            for (const g of groupNames()) {
+                settings.profiles.filter((p) => p.group === g).forEach((p) => out.push(p));
+            }
+            return out;
+        }
+
         /* ---------------- 设置面板：配置卡片 ---------------- */
         function profileCard(p) {
             const active = isActive(p);
@@ -776,7 +831,7 @@
             $('<div class="aqs-card-url"></div>').text(p.url).appendTo(card);
 
             const meta = $('<div class="aqs-card-meta"></div>');
-            if (p.model) $('<span class="aqs-chip aqs-chip-model"></span>').text(p.model).appendTo(meta);
+            if (p.model) $('<span class="aqs-chip aqs-chip-model"></span>').text(p.model).attr('title', p.model).appendTo(meta);
             $('<span class="aqs-chip aqs-chip-dim"></span>').text(p.key ? 'KEY ✓' : 'NO KEY').appendTo(meta);
             card.append(meta);
 
@@ -855,18 +910,46 @@
                 .appendTo(box);
         }
 
+        function appendPagedCards($host, items, pageKey, rerender) {
+            const raw = settings.pages.list[pageKey] || 0;
+            const cur = clampPage(raw, items.length);
+            if (raw !== cur) {
+                settings.pages.list[pageKey] = cur;
+                save();
+            } else {
+                settings.pages.list[pageKey] = cur;
+            }
+            const sliced = slicePage(items, cur);
+            sliced.items.forEach((p) => $host.append(profileCard(p)));
+            const pager = makePager(sliced.page, sliced.total, (np) => {
+                settings.pages.list[pageKey] = np;
+                save();
+                rerender();
+            });
+            if (pager && pager.length) $host.append(pager);
+        }
+
         function renderList() {
             const list = $('#aqs_profile_list').empty();
             const names = groupNames();
             for (const k of Object.keys(settings.groupCollapsed)) {
                 if (!names.includes(k)) delete settings.groupCollapsed[k];
             }
+            for (const k of Object.keys(settings.pages.list)) {
+                if (k !== '__root__' && !names.includes(k)) delete settings.pages.list[k];
+            }
             renderGroupPicker();
             if (!settings.profiles.length) {
                 list.append($('<div class="aqs-empty">还没有站点，在下方添加第一个吧</div>'));
                 return;
             }
-            settings.profiles.filter((p) => !p.group).forEach((p) => list.append(profileCard(p)));
+
+            const ungrouped = settings.profiles.filter((p) => !p.group);
+            if (ungrouped.length) {
+                const wrap = $('<div class="aqs-list-section"></div>').appendTo(list);
+                appendPagedCards(wrap, ungrouped, '__root__', renderList);
+            }
+
             for (const g of groupNames()) {
                 const items = settings.profiles.filter((p) => p.group === g);
                 const collapsed = !!settings.groupCollapsed[g];
@@ -883,7 +966,7 @@
                 });
                 box.append(head);
                 const body = $('<div class="aqs-group-body"></div>');
-                items.forEach((p) => body.append(profileCard(p)));
+                if (!collapsed) appendPagedCards(body, items, g, renderList);
                 box.append(body);
                 list.append(box);
             }
@@ -996,17 +1079,30 @@
         }
 
         /* ---------------- 快捷面板 / 插头嵌入 ---------------- */
-        function buildProfileItems($root, { closeOnClick } = {}) {
+        function buildProfileItems($root, { closeOnClick, pageKey } = {}) {
             $root.empty();
             if (!settings.profiles.length) {
                 $root.append($('<div class="aqs-empty">先去扩展设置里添加站点</div>'));
                 return;
             }
+
+            const flat = orderedProfiles();
+            const key = pageKey || 'embed';
+            const raw = settings.pages[key] || 0;
+            const cur = clampPage(raw, flat.length);
+            if (raw !== cur) {
+                settings.pages[key] = cur;
+                save();
+            } else {
+                settings.pages[key] = cur;
+            }
+            const sliced = slicePage(flat, cur);
+
             const addItem = (p) => {
                 const item = $('<div class="aqs-qp-item"></div>').toggleClass('aqs-active', isActive(p));
                 const main = $('<div class="aqs-qp-main"></div>').appendTo(item);
                 $('<span class="aqs-qp-name"></span>').text(p.name).appendTo(main);
-                if (p.model) $('<span class="aqs-qp-model"></span>').text(p.model).appendTo(main);
+                if (p.model) $('<span class="aqs-qp-model"></span>').text(p.model).attr('title', p.model).appendTo(main);
                 item.attr('title', p.model ? (p.name + ' · ' + p.model) : p.name);
                 item.on('click', async (e) => {
                     e.preventDefault();
@@ -1017,24 +1113,41 @@
                 });
                 $root.append(item);
             };
-            settings.profiles.filter((p) => !p.group).forEach(addItem);
-            for (const g of groupNames()) {
-                $('<div class="aqs-qp-group"></div>').text(g).appendTo($root);
-                settings.profiles.filter((p) => p.group === g).forEach(addItem);
-            }
+
+            let lastGroup = null;
+            sliced.items.forEach((p) => {
+                const g = p.group || '';
+                if (g) {
+                    if (g !== lastGroup) {
+                        $('<div class="aqs-qp-group"></div>').text(g).appendTo($root);
+                        lastGroup = g;
+                    }
+                } else {
+                    lastGroup = '';
+                }
+                addItem(p);
+            });
+
+            const pager = makePager(sliced.page, sliced.total, (np) => {
+                settings.pages[key] = np;
+                save();
+                if (key === 'quick') renderQuickPanel();
+                else renderApiEmbed();
+            });
+            if (pager && pager.length) $root.append(pager);
         }
 
         function renderQuickPanel() {
             const panel = $('#aqs_quick_panel');
             if (!panel.length) return;
-            buildProfileItems(panel, { closeOnClick: true });
+            buildProfileItems(panel, { closeOnClick: true, pageKey: 'quick' });
             panel.prepend($('<div class="aqs-qp-title"><i class="fa-solid fa-shuffle"></i> API·SWITCH</div>'));
         }
 
         function renderApiEmbed() {
             const body = $('#aqs_api_embed_body');
             if (!body.length) return;
-            buildProfileItems(body, { closeOnClick: false });
+            buildProfileItems(body, { closeOnClick: false, pageKey: 'embed' });
             const n = settings.profiles.length;
             $('#aqs_api_embed_count').text(n ? (n + ' 站') : '空');
         }

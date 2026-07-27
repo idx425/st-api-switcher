@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '2.1.12';
+    const VERSION = '2.1.13';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -52,12 +52,74 @@
         const currentUrl = () => normUrl($('#custom_api_url_text').val());
         const isActive = (p) => !!currentUrl() && currentUrl() === normUrl(p.url);
 
-        async function writeKey(key) {
-            const res = await fetch('/api/secrets/write', {
+        function fetchTimeout(url, opts, ms) {
+            const ac = new AbortController();
+            const t = setTimeout(() => ac.abort(), ms || 8000);
+            return fetch(url, Object.assign({}, opts, { signal: ac.signal })).finally(() => clearTimeout(t));
+        }
+
+        /* ST/TT 的 /api/secrets/write 只会追加新条目，不会覆盖。
+         * 官方 Connect 在 #api_key_custom 有值时也会再 write 一次。
+         * 所以快切固定维护一条 label=API 快切 的密钥：先清后写，Connect 前清空输入框。 */
+        const SECRET_KEY_CUSTOM = 'api_key_custom';
+        const SECRET_LABEL = 'API 快切';
+
+        async function readCustomSecrets() {
+            try {
+                let headers;
+                try {
+                    headers = ctx.getRequestHeaders({ omitContentType: true });
+                } catch {
+                    headers = ctx.getRequestHeaders();
+                }
+                const res = await fetchTimeout('/api/secrets/read', {
+                    method: 'POST',
+                    headers,
+                }, 8000);
+                if (!res.ok) return [];
+                const state = await res.json();
+                const list = state && state[SECRET_KEY_CUSTOM];
+                return Array.isArray(list) ? list : [];
+            } catch {
+                return [];
+            }
+        }
+
+        async function deleteCustomSecret(id) {
+            const body = id
+                ? { key: SECRET_KEY_CUSTOM, id }
+                : { key: SECRET_KEY_CUSTOM };
+            const res = await fetchTimeout('/api/secrets/delete', {
                 method: 'POST',
                 headers: ctx.getRequestHeaders(),
-                body: JSON.stringify({ key: 'api_key_custom', value: key || '' }),
-            });
+                body: JSON.stringify(body),
+            }, 8000);
+            // 旧版可能不带 id；非 2xx 时继续尝试其它条目
+            return res.ok || res.status === 204;
+        }
+
+        async function purgeCustomSecrets() {
+            // 最多扫几轮，避免异常死循环；ST/TT 都支持按 id 删除
+            for (let round = 0; round < 8; round++) {
+                const list = await readCustomSecrets();
+                if (!list.length) return;
+                for (const item of list) {
+                    if (item && item.id) await deleteCustomSecret(item.id);
+                    else await deleteCustomSecret();
+                }
+            }
+        }
+
+        async function writeKey(key) {
+            const value = String(key || '');
+            // 先清掉 api_key_custom 槽位里已有条目，再写入唯一一条（覆盖语义）
+            await purgeCustomSecrets();
+            if (!value) return;
+            const res = await fetchTimeout('/api/secrets/write', {
+                method: 'POST',
+                headers: ctx.getRequestHeaders(),
+                body: JSON.stringify({ key: SECRET_KEY_CUSTOM, value, label: SECRET_LABEL }),
+            }, 8000);
             if (!res.ok) throw new Error('写入密钥失败: HTTP ' + res.status);
         }
 
@@ -77,17 +139,16 @@
                 $('#chat_completion_source').val('custom').trigger('change');
                 await sleep(120);
 
-                // 密钥库 + 可见框必须同时写，且在点 Connect 前再写一次
+                // 只写一次密钥库（覆盖同一条），URL/模型写进表单
                 await writeKey(key);
                 $('#custom_api_url_text').val(url).trigger('input').trigger('change');
-                $('#api_key_custom').val(key).trigger('input').trigger('change');
                 if (p.model) {
                     $('#custom_model_id').val(p.model).trigger('input').trigger('change');
                 }
+                // 关键关键输入框！Connect 看到有值会再 writeSecret 追加一条
+                // 密钥已在 secrets 里激活，custom 源允许 keyless 继续连接
+                $('#api_key_custom').val('').trigger('input').trigger('change');
                 await sleep(120);
-                // Connect 会回读可见密钥框写回密钥库：再确保一次
-                await writeKey(key);
-                $('#api_key_custom').val(key);
 
                 const $btn = $('#api_button_openai');
                 if ($btn.length) $btn.trigger('click');
@@ -123,11 +184,6 @@
 
         let scopeCache;
 
-        function fetchTimeout(url, opts, ms) {
-            const ac = new AbortController();
-            const t = setTimeout(() => ac.abort(), ms || 8000);
-            return fetch(url, Object.assign({}, opts, { signal: ac.signal })).finally(() => clearTimeout(t));
-        }
 
         async function resolveInstallScope() {
             if (scopeCache !== undefined) return scopeCache;
@@ -444,10 +500,11 @@
                     }
                 }
 
-                // 2) 酒馆服务端代理（需要把目标 Key 临时写入密钥库）
+                // 2) 酒馆服务端代理（需要把目标 Key 临时写入密钥库；仍只保留一条）
                 await writeKey(useKey);
                 wroteProxyKey = true;
-                $('#api_key_custom').val(useKey);
+                // 不把 Key 留在可见框，避免用户点 Connect 再追加一条
+                $('#api_key_custom').val('');
                 await sleep(250);
                 for (const u of urls) {
                     try {
@@ -464,10 +521,10 @@
                     const restore = (activeProfile && String(activeProfile.key || '').trim()) || prevKey;
                     if (restore && restore !== useKey) {
                         writeKey(restore).then(() => {
-                            if (String($('#api_key_custom').val() || '') === useKey) {
-                                $('#api_key_custom').val(restore);
-                            }
+                            $('#api_key_custom').val('');
                         }).catch(() => {});
+                    } else {
+                        $('#api_key_custom').val('');
                     }
                 }
             }
@@ -936,7 +993,7 @@
                 if (!names.includes(k)) delete settings.groupCollapsed[k];
             }
             for (const k of Object.keys(settings.pages.list)) {
-                if (k !== '__root__' && !names.includes(k)) delete settings.pages.list[k];
+                if (k !== '__root__' && k !== '__groups__' && !names.includes(k)) delete settings.pages.list[k];
             }
             renderGroupPicker();
             if (!settings.profiles.length) {
@@ -950,7 +1007,18 @@
                 appendPagedCards(wrap, ungrouped, '__root__', renderList);
             }
 
-            for (const g of groupNames()) {
+            // 分组本身也分页：超过 PAGE_SIZE 个分组只显示当前页
+            const allGroups = names;
+            const rawG = settings.pages.list.__groups__ || 0;
+            const curG = clampPage(rawG, allGroups.length);
+            if (rawG !== curG) {
+                settings.pages.list.__groups__ = curG;
+                save();
+            } else {
+                settings.pages.list.__groups__ = curG;
+            }
+            const slicedG = slicePage(allGroups, curG);
+            for (const g of slicedG.items) {
                 const items = settings.profiles.filter((p) => p.group === g);
                 const collapsed = !!settings.groupCollapsed[g];
                 const box = $('<div class="aqs-group"></div>').toggleClass('aqs-collapsed', collapsed);
@@ -970,6 +1038,12 @@
                 box.append(body);
                 list.append(box);
             }
+            const groupPager = makePager(slicedG.page, slicedG.total, (np) => {
+                settings.pages.list.__groups__ = np;
+                save();
+                renderList();
+            });
+            if (groupPager && groupPager.length) list.append(groupPager);
         }
 
         /* renderAll 在快捷面板段重定义，同步刷新嵌入面板 */

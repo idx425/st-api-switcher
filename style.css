@@ -1,5 +1,5 @@
 /* ============================================================
-   API 快切 · 高级暗色玻璃 v2.1.8
+   API 快切 · 高级暗色玻璃 v2.1.9
    设计语言：Dark Glassmorphism · 浅色主题强制可读 · 手机底部弹层
    三端适配：手机单列 / 平板与桌面自动多列
    ============================================================ */
@@ -1285,20 +1285,77 @@
 }
 
 
-/* ---- 魔法棒菜单项：强制高对比，不受酒馆浅色主题 text-fill 影响 ---- */
-#aqs_wand_btn,
-#aqs_wand_btn .list-group-item,
-#aqs_wand_btn .extensionsMenuExtensionButton {
+/* ---- 扩展设置：与其他插件一致的可收起抽屉 ---- */
+.aqs-settings {
+    margin-top: 6px;
+}
+.aqs-settings > .inline-drawer {
+    width: 100%;
+}
+.aqs-settings .inline-drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    cursor: pointer;
+    user-select: none;
+}
+.aqs-settings .inline-drawer-header b {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    font-weight: 700;
+}
+.aqs-settings .inline-drawer-content {
+    padding-top: 4px;
+}
+
+/* ---- 魔法棒菜单项：结构对齐其他扩展，禁止省略号裁切 ---- */
+#extensionsMenu #aqs_wand_btn.list-group-item,
+#aqs_wand_btn.list-group-item {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    align-items: center !important;
+    gap: 8px !important;
+    width: max-content !important;
+    min-width: 100% !important;
+    max-width: none !important;
+    overflow: visible !important;
+    white-space: nowrap !important;
+    text-overflow: clip !important;
+    font-weight: 600 !important;
     color: #f5f8ff !important;
     -webkit-text-fill-color: #f5f8ff !important;
     opacity: 1 !important;
 }
-#aqs_wand_btn .list-group-item {
-    font-weight: 600 !important;
-}
-#aqs_wand_btn .extensionsMenuExtensionButton {
+#aqs_wand_btn .extensionsMenuExtensionButton,
+#aqs_wand_btn > i {
+    flex: 0 0 auto !important;
     color: #67e8f9 !important;
     -webkit-text-fill-color: #67e8f9 !important;
+    opacity: 1 !important;
+}
+#aqs_wand_btn .aqs-wand-label,
+#aqs_wand_btn > span {
+    display: inline-block !important;
+    flex: 0 0 auto !important;
+    white-space: nowrap !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+    max-width: none !important;
+    width: auto !important;
+    color: #f5f8ff !important;
+    -webkit-text-fill-color: #f5f8ff !important;
+    opacity: 1 !important;
+}
+/* 菜单容器别把长标签裁成 ... */
+#extensionsMenu,
+#extensions_menu,
+.extensions_menu {
+    overflow-x: auto !important;
+    overflow-y: auto !important;
 }
 
 /* 插头抽屉内嵌：标题/站点名再提亮一档 */

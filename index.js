@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '2.1.8';
+    const VERSION = '2.1.9';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -1115,14 +1115,12 @@
             const menu = findExtensionsMenu();
             if (!menu.length) return false;
 
-            const btn = $(`
-                <div id="aqs_wand_btn" class="extension_container interactable" tabindex="0" title="API 快切">
-                    <div class="list-group-item flex-container flexGap5 interactable">
-                        <div class="fa-solid fa-shuffle extensionsMenuExtensionButton"></div>
-                        API 快切
-                    </div>
-                </div>
-            `);
+            // 与角色卡/世界书插件同一结构：list-group-item + i + span，避免被容器裁切成 ...
+            const btn = $(
+                '<div id="aqs_wand_btn" class="list-group-item flex-container flexGap5 interactable" tabindex="0" title="API 快切">' +
+                '<i class="fa-solid fa-shuffle extensionsMenuExtensionButton"></i>' +
+                '<span class="aqs-wand-label">API 快切</span></div>'
+            );
             btn.on('click touchend', function (e) {
                 // touchend 在部分安卓 WebView 比 click 更稳；防双触发
                 if (e.type === 'touchend') {
@@ -1149,10 +1147,8 @@
                 } catch { /* ignore */ }
             });
 
-            // 优先塞进 extension_container 区域
-            const container = menu.find('.extension_container').first();
-            if (container.length) container.append(btn);
-            else menu.append(btn);
+            // 与其他扩展一致：直接 append 到 #extensionsMenu
+            menu.append(btn);
             return true;
         }
 
@@ -1209,66 +1205,76 @@
         /* ---------------- 设置面板 HTML ---------------- */
         const html = `
             <div class="aqs-settings">
-              <div class="aqs-sys-bar">
-                <span class="aqs-sys-id">API·SWITCH</span>
-                <span class="aqs-sys-ver">v${VERSION}</span>
-                <span class="aqs-blink">_</span>
-                <span class="aqs-sys-spacer"></span>
-                <div id="aqs_update_btn" class="menu_button menu_button_icon aqs-btn" title="检查 / 安装更新">
-                  <i class="fa-solid fa-satellite-dish"></i> 检查更新
+              <div class="inline-drawer">
+                <div class="inline-drawer-toggle inline-drawer-header">
+                  <b><i class="fa-solid fa-shuffle aqs-grad-icon"></i>&nbsp;API 快切</b>
+                  <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                </div>
+                <div class="inline-drawer-content">
+                  <div class="aqs-sys-bar">
+                    <span class="aqs-sys-id">API·SWITCH</span>
+                    <span class="aqs-sys-ver">v${VERSION}</span>
+                    <span class="aqs-blink">_</span>
+                    <span class="aqs-sys-spacer"></span>
+                    <div id="aqs_update_btn" class="menu_button menu_button_icon aqs-btn" title="检查 / 安装更新">
+                      <i class="fa-solid fa-satellite-dish"></i> 检查更新
+                    </div>
+                  </div>
+                  <hr class="aqs-hr">
+                  <div id="aqs_profile_list"></div>
+                  <hr class="aqs-hr">
+                  <div class="aqs-form-title" id="aqs_form_title">新增站点</div>
+                  <input id="aqs_name" class="text_pole" type="text" placeholder="名称（如：OpenRouter）" autocomplete="off">
+                  <input id="aqs_url" class="text_pole" type="text" placeholder="API URL（https://.../v1）" autocomplete="off">
+                  <input id="aqs_key" class="text_pole" type="password" placeholder="API Key" autocomplete="off">
+                  <div class="aqs-model-row">
+                    <input id="aqs_model" class="text_pole" type="text" placeholder="模型 ID（可留空）" autocomplete="off">
+                    <div id="aqs_fetch_models" class="menu_button menu_button_icon aqs-btn" title="从接口拉取模型列表">
+                      <i class="fa-solid fa-list"></i> 获取模型
+                    </div>
+                  </div>
+                  <div class="aqs-field-label">分组</div>
+                  <div id="aqs_group_picker"></div>
+                  <input id="aqs_group" class="text_pole" type="text" placeholder="输入新分组名" autocomplete="off" style="display:none;">
+                  <div class="aqs-form-btns">
+                    <div id="aqs_save" class="menu_button menu_button_icon aqs-btn aqs-btn-primary">
+                      <i class="fa-solid fa-plus"></i> 保存站点
+                    </div>
+                    <div id="aqs_cancel_edit" class="menu_button menu_button_icon aqs-btn" style="display:none;">
+                      取消编辑
+                    </div>
+                  </div>
+                  <div class="aqs-io-btns">
+                    <div id="aqs_export" class="menu_button menu_button_icon aqs-btn">
+                      <i class="fa-solid fa-file-export"></i> 导出
+                    </div>
+                    <div id="aqs_import" class="menu_button menu_button_icon aqs-btn">
+                      <i class="fa-solid fa-file-import"></i> 导入
+                    </div>
+                    <input id="aqs_import_file" type="file" accept="application/json,.json" style="display:none;">
+                  </div>
+                  <span class="aqs-note">
+                    手机端主入口：点顶部「插头 / API Connections」即可快切；魔法棒菜单为快捷入口。
+                    切换后若密钥未生效，可到 API 页点一次 Connect。
+                  </span>
                 </div>
               </div>
-              <hr class="aqs-hr">
-              <div id="aqs_profile_list"></div>
-              <hr class="aqs-hr">
-              <div class="aqs-form-title" id="aqs_form_title">新增站点</div>
-              <input id="aqs_name" class="text_pole" type="text" placeholder="名称（如：OpenRouter）" autocomplete="off">
-              <input id="aqs_url" class="text_pole" type="text" placeholder="API URL（https://.../v1）" autocomplete="off">
-              <input id="aqs_key" class="text_pole" type="password" placeholder="API Key" autocomplete="off">
-              <div class="aqs-model-row">
-                <input id="aqs_model" class="text_pole" type="text" placeholder="模型 ID（可留空）" autocomplete="off">
-                <div id="aqs_fetch_models" class="menu_button menu_button_icon aqs-btn" title="从接口拉取模型列表">
-                  <i class="fa-solid fa-list"></i> 获取模型
-                </div>
-              </div>
-              <div class="aqs-field-label">分组</div>
-              <div id="aqs_group_picker"></div>
-              <input id="aqs_group" class="text_pole" type="text" placeholder="输入新分组名" autocomplete="off" style="display:none;">
-              <div class="aqs-form-btns">
-                <div id="aqs_save" class="menu_button menu_button_icon aqs-btn aqs-btn-primary">
-                  <i class="fa-solid fa-plus"></i> 保存站点
-                </div>
-                <div id="aqs_cancel_edit" class="menu_button menu_button_icon aqs-btn" style="display:none;">
-                  取消编辑
-                </div>
-              </div>
-              <div class="aqs-io-btns">
-                <div id="aqs_export" class="menu_button menu_button_icon aqs-btn">
-                  <i class="fa-solid fa-file-export"></i> 导出
-                </div>
-                <div id="aqs_import" class="menu_button menu_button_icon aqs-btn">
-                  <i class="fa-solid fa-file-import"></i> 导入
-                </div>
-                <input id="aqs_import_file" type="file" accept="application/json,.json" style="display:none;">
-              </div>
-              <span class="aqs-note">
-                手机端主入口：点顶部「插头 / API Connections」即可快切；魔法棒菜单为快捷入口。
-                切换后若密钥未生效，可到 API 页点一次 Connect。
-              </span>
             </div>
         `;
 
         ctx.extensionSettings[MODULE] = settings;
-        const container = $('#extensions_settings2, #extensions_settings').first();
+        const $settingsHost = () => ($('#extensions_settings2').length ? $('#extensions_settings2') : $('#extensions_settings'));
+        const container = $settingsHost();
         if (container.length) {
-            container.append(html);
+            // 插到扩展设置顶部，与其他插件一致使用 inline-drawer 可整块收起
+            container.prepend(html);
         } else {
             // 某些移动端壳子设置面板晚挂载
             const waitSettings = setInterval(() => {
-                const c = $('#extensions_settings2, #extensions_settings').first();
+                const c = $settingsHost();
                 if (!c.length) return;
                 clearInterval(waitSettings);
-                if (!$('.aqs-settings').length) c.append(html);
+                if (!$('.aqs-settings').length) c.prepend(html);
                 bindSettingsUi();
                 renderList();
             }, 400);

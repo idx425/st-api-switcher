@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '3.0.0';
+    const VERSION = '3.0.1';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -1327,10 +1327,12 @@
                 $('<span class="aqs-qp-name"></span>').text(p.name).appendTo(main);
                 if (p.model) $('<span class="aqs-qp-model"></span>').text(p.model).attr('title', p.model).appendTo(main);
                 item.attr('title', p.model ? (p.name + ' · ' + p.model) : p.name);
-                item.on('click', async (e) => {
-                    e.preventDefault();
+                item.on('pointerdown mousedown touchstart click', async (e) => {
+                    // down 阶段只拦冒泡，避免魔法棒菜单被当成点外部关掉；勿 preventDefault，否则手机可能不出 click
                     e.stopPropagation();
                     if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+                    if (e.type !== 'click') return;
+                    e.preventDefault();
                     // 快捷面板保持打开，便于连续切换；点面板外 / 标题叉号 / Esc 才关闭
                     await applyProfile(p);
                 });
@@ -1526,22 +1528,20 @@
             buildProfileItems(panel, { closeOnClick: false, pageKey: 'quick' });
             const $title = $('<div class="aqs-qp-title"></div>');
             $title.append($('<span class="aqs-qp-title-text"><i class="fa-solid fa-shuffle"></i> API·SWITCH</span>'));
-            const $close = $('<button type="button" class="aqs-qp-close" title="关闭" aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>');
-            $close.on('pointerup click', (e) => {
-                if (e.type === 'click' && $close.data('aqs-ptr-handled')) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    return;
-                }
-                if (e.type === 'pointerup') {
-                    if (e.pointerType === 'mouse' && e.button !== 0) return;
-                    $close.data('aqs-ptr-handled', 1);
-                    setTimeout(() => $close.removeData('aqs-ptr-handled'), 400);
-                }
+            const $close = $('<button type="button" class="aqs-qp-close" title="关闭快切（不关魔法棒菜单）" aria-label="关闭快切"><i class="fa-solid fa-xmark"></i></button>');
+            // 必须拦截 pointerdown/mousedown：酒馆魔法棒菜单多半在 down 阶段判定「点外部」并整菜单关闭
+            $close.on('pointerdown mousedown touchstart pointerup mouseup click touchend', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
-                closeQuickPanel();
+                if (e.type === 'click' && $close.data('aqs-ptr-handled')) return;
+                if (e.type === 'pointerdown' || e.type === 'mousedown' || e.type === 'touchstart') {
+                    if (e.type === 'pointerdown' && e.pointerType === 'mouse' && e.button !== 0) return;
+                    if (e.type === 'mousedown' && e.button !== 0) return;
+                    $close.data('aqs-ptr-handled', 1);
+                    setTimeout(() => $close.removeData('aqs-ptr-handled'), 400);
+                    closeQuickPanel();
+                }
             });
             $title.append($close);
             panel.prepend($title);
@@ -1671,8 +1671,15 @@
         function ensureFloatingPanel() {
             if ($('#aqs_quick_panel').length) return;
             // 挂到 <html>，与模型弹窗一致，避免被 #extensionsMenu 的 stacking / overflow 裁切遮挡
-            $(document.documentElement).append('<div id="aqs_quick_panel" style="display:none;"></div>');
-            // pointerdown 比 mousedown/touchstart 更稳；点面板外才关
+            const $panel = $('<div id="aqs_quick_panel" style="display:none;"></div>');
+            $(document.documentElement).append($panel);
+            // 面板不在魔法棒菜单 DOM 内；若不拦截冒泡，酒馆会当成「点菜单外」把整菜单关掉
+            // X / 列表点击只应关快切或切站，不能连带关魔法棒
+            $panel.on('pointerdown pointerup mousedown mouseup click touchstart touchend wheel', (e) => {
+                e.stopPropagation();
+                if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+            });
+            // pointerdown 比 mousedown/touchstart 更稳；点面板外才关快切（魔法棒是否关由酒馆自己判定）
             $(document).on('pointerdown.aqs_qp touchstart.aqs_qp', (e) => {
                 // touchstart 兜底老 WebView；pointer 事件下 touchstart 可能连发，用 data 去重
                 if (e.type === 'touchstart' && window.PointerEvent) return;

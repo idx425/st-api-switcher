@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '2.1.9';
+    const VERSION = '2.1.10';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -1004,8 +1004,10 @@
             }
             const addItem = (p) => {
                 const item = $('<div class="aqs-qp-item"></div>').toggleClass('aqs-active', isActive(p));
-                $('<span class="aqs-qp-name"></span>').text(p.name).appendTo(item);
-                if (p.model) $('<span class="aqs-qp-model"></span>').text(p.model).appendTo(item);
+                const main = $('<div class="aqs-qp-main"></div>').appendTo(item);
+                $('<span class="aqs-qp-name"></span>').text(p.name).appendTo(main);
+                if (p.model) $('<span class="aqs-qp-model"></span>').text(p.model).appendTo(main);
+                item.attr('title', p.model ? (p.name + ' · ' + p.model) : p.name);
                 item.on('click', async (e) => {
                     e.preventDefault();
                     e.stopPropagation();

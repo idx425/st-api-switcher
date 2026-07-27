@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '2.2.0';
+    const VERSION = '2.3.0';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -1057,9 +1057,11 @@
             for (const k of Object.keys(settings.groupCollapsed)) {
                 if (!names.includes(k)) delete settings.groupCollapsed[k];
             }
-            // 顶层 __main__ / 表单芯片 __picker__ / 组内页码用分组名；清掉旧键与失效键
+            // 站点页 __sites__ / 组页 __groups__ / 表单芯片 __picker__ / 组内页码用分组名
+            // 兼容清理旧版 __main__ 等失效键
+            const keepKeys = new Set(['__sites__', '__groups__', '__picker__', ...names]);
             for (const k of Object.keys(settings.pages.list)) {
-                if (k === '__main__' || k === '__picker__' || names.includes(k)) continue;
+                if (keepKeys.has(k)) continue;
                 delete settings.pages.list[k];
             }
             renderGroupPicker();
@@ -1068,35 +1070,40 @@
                 return;
             }
 
-            // 顶层块 = 未分组站点卡片 + 分组头，统一按总数分页（每页最多 4 块）
-            // 这样 5 个站点 / 5 个分组 / 混合列表都不会一页堆 6+ 条
-            const blocks = [];
-            settings.profiles.filter((p) => !p.group).forEach((p) => {
-                blocks.push({ kind: 'profile', profile: p });
-            });
-            names.forEach((g) => {
-                blocks.push({ kind: 'group', name: g });
-            });
+            // 分层分页，保证整齐：
+            // 1) 未分组站点 >4 → 在「站点层」分页
+            // 2) 分组数 >4 → 在「组层」分页（折叠时也只显示当前页的组头）
+            // 3) 组内站点 >4 → 展开后在组内分页
+            // 不把站点与组混成一条流水线，避免布局忽长忽短
+            const ungrouped = settings.profiles.filter((p) => !p.group);
+            if (ungrouped.length) {
+                const sitesWrap = $('<div class="aqs-list-section aqs-list-sites"></div>');
+                appendPagedCards(sitesWrap, ungrouped, '__sites__', renderList);
+                list.append(sitesWrap);
+            }
 
-            const raw = settings.pages.list.__main__ || 0;
-            const cur = clampPage(raw, blocks.length);
-            if (raw !== cur) {
-                settings.pages.list.__main__ = cur;
-                save();
-            } else {
-                settings.pages.list.__main__ = cur;
+            if (names.length) {
+                const groupsWrap = $('<div class="aqs-list-section aqs-list-groups"></div>');
+                const raw = settings.pages.list.__groups__ || 0;
+                const cur = clampPage(raw, names.length);
+                if (raw !== cur) {
+                    settings.pages.list.__groups__ = cur;
+                    save();
+                } else {
+                    settings.pages.list.__groups__ = cur;
+                }
+                const sliced = slicePage(names, cur);
+                for (const g of sliced.items) {
+                    groupsWrap.append(makeGroupBox(g));
+                }
+                const pager = makePager(sliced.page, sliced.total, (np) => {
+                    settings.pages.list.__groups__ = np;
+                    save();
+                    renderList();
+                });
+                if (pager && pager.length) groupsWrap.append(pager);
+                list.append(groupsWrap);
             }
-            const sliced = slicePage(blocks, cur);
-            for (const b of sliced.items) {
-                if (b.kind === 'profile') list.append(profileCard(b.profile));
-                else list.append(makeGroupBox(b.name));
-            }
-            const pager = makePager(sliced.page, sliced.total, (np) => {
-                settings.pages.list.__main__ = np;
-                save();
-                renderList();
-            });
-            if (pager && pager.length) list.append(pager);
         }
 
         /* renderAll 在快捷面板段重定义，同步刷新嵌入面板 */

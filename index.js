@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '3.5.1';
+    const VERSION = '3.6.0';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -36,8 +36,31 @@
         const settings = ctx.extensionSettings[MODULE];
         const save = () => ctx.saveSettingsDebounced();
         const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        function uniqStrings(items) {
+            const out = [];
+            const seen = new Set();
+            for (const item of items || []) {
+                const v = String(item || '').trim();
+                if (!v || seen.has(v)) continue;
+                seen.add(v);
+                out.push(v);
+            }
+            return out;
+        }
+        function splitModelValues(...values) {
+            const out = [];
+            for (const value of values) {
+                if (Array.isArray(value)) out.push(...value);
+                else out.push(...String(value || '').split(/[\n,，;；]+/));
+            }
+            return uniqStrings(out);
+        }
         if (!Array.isArray(settings.profiles)) settings.profiles = [];
         if (!settings.groupCollapsed || typeof settings.groupCollapsed !== 'object') settings.groupCollapsed = {};
+        if (!settings.modelCollapsed || typeof settings.modelCollapsed !== 'object') settings.modelCollapsed = {};
+        if (!Array.isArray(settings.secretIds)) settings.secretIds = [];
+        settings.secretIds = uniqStrings(settings.secretIds);
+        if (typeof settings.autoSyncNative !== 'boolean') settings.autoSyncNative = true;
         if (!settings.pages || typeof settings.pages !== 'object') settings.pages = {};
         if (!settings.pages.list || typeof settings.pages.list !== 'object') settings.pages.list = {};
         if (typeof settings.pages.embed !== 'number' || settings.pages.embed < 0) settings.pages.embed = 0;
@@ -46,19 +69,24 @@
         const rawProfiles = Array.isArray(settings.profiles) ? settings.profiles : [];
         const cleanProfiles = rawProfiles
             .filter((p) => p && typeof p === 'object')
-            .map((p) => ({
-                id: typeof p.id === 'string' && p.id ? p.id : uid(),
-                name: String(p.name || '').trim() || '未命名',
-                url: String(p.url || '').trim().replace(/\/+$/, ''),
-                key: typeof p.key === 'string' ? p.key : String(p.key || ''),
-                model: typeof p.model === 'string' ? p.model : String(p.model || ''),
-                group: typeof p.group === 'string' ? p.group.trim() : '',
-            }));
+            .map((p) => {
+                const models = splitModelValues(p.model, p.models);
+                const model = models[0] || '';
+                return {
+                    id: typeof p.id === 'string' && p.id ? p.id : uid(),
+                    name: String(p.name || '').trim() || '未命名',
+                    url: String(p.url || '').trim().replace(/\/+$/, ''),
+                    key: typeof p.key === 'string' ? p.key : String(p.key || ''),
+                    model,
+                    models,
+                    group: typeof p.group === 'string' ? p.group.trim() : '',
+                };
+            });
         const dirty = rawProfiles.length !== cleanProfiles.length || rawProfiles.some((p, i) => {
             const c = cleanProfiles[i];
             if (!p || !c) return true;
             return p.id !== c.id || String(p.name || '') !== c.name || String(p.url || '').replace(/\/+$/, '') !== c.url
-                || String(p.key || '') !== c.key || String(p.model || '') !== c.model
+                || String(p.key || '') !== c.key || splitModelValues(p.model, p.models).join('\n') !== c.models.join('\n')
                 || String(p.group || '').trim() !== c.group;
         });
         settings.profiles = cleanProfiles;
@@ -71,7 +99,18 @@
         /* ---------------- 工具 ---------------- */
         const normUrl = (u) => String(u || '').trim().replace(/\/+$/, '');
         const currentUrl = () => normUrl($('#custom_api_url_text').val());
+        const currentModel = () => String($('#custom_model_id').val() || '').trim();
         const isActive = (p) => !!currentUrl() && currentUrl() === normUrl(p.url);
+        const profileModels = (p) => splitModelValues(p && p.model, p && p.models);
+        const isActiveChoice = (p, model) => isActive(p) && String(model || '') === currentModel();
+
+        function setSelectValueIfNeeded(selector, value) {
+            const $el = $(selector);
+            if (!$el.length) return false;
+            if (String($el.val() || '') === String(value || '')) return false;
+            $el.val(value).trigger('change');
+            return true;
+        }
 
         async function waitForElement(selector, ms = 2500) {
             const deadline = Date.now() + ms;
@@ -92,7 +131,8 @@
         /* ST/TT 的 /api/secrets/write 只会追加新条目，不会原地覆盖。
          * TT/新版 ST 的 Connect 会把 secret_state 里当前 active 的 id 作为 secret_id 发给后端；
          * 若「先删后写」会让 secret_state 短暂指向已删除 id → Validation error: Secret id not found。
-         * 策略：先写新密钥（成为 active）→ 再删旧条目 → 同步 secret_state。
+         * 策略：先写 API 快切自己的新密钥（成为 active）→ 只删本插件旧条目 → 同步 secret_state。
+         * 绝不清空用户在酒馆原生界面保存的其它 api_key_custom 条目。
          * Connect 前清空 #api_key_custom，避免官方再 write 追加一条。 */
         const SECRET_KEY_CUSTOM = 'api_key_custom';
         const SECRET_LABEL = 'API 快切';
@@ -187,22 +227,73 @@
             return run;
         }
 
+        function normalizeSecretId(x) {
+            if (typeof x === 'string' || typeof x === 'number') return String(x);
+            if (x && (typeof x.id === 'string' || typeof x.id === 'number')) return String(x.id);
+            return null;
+        }
+
+        function secretItemLabel(item) {
+            return String(item && (item.label || item.name || item.title || item.comment || item.description) || '');
+        }
+
+        function isPluginSecret(item) {
+            if (!item) return false;
+            const id = normalizeSecretId(item);
+            if (id && settings.secretIds.includes(id)) return true;
+            const label = secretItemLabel(item);
+            return label === SECRET_LABEL || label.includes(SECRET_LABEL) || label.includes('ST API Switcher');
+        }
+
+        function rememberPluginSecret(id) {
+            if (!id || settings.secretIds.includes(id)) return;
+            settings.secretIds.push(id);
+            try { save(); } catch { /* ignore */ }
+        }
+
+        function syncKnownPluginSecrets(list, keepId) {
+            const live = new Set((list || []).map(normalizeSecretId).filter(Boolean));
+            const next = uniqStrings([keepId, ...settings.secretIds]).filter((id) => live.has(id));
+            if (next.join('|') !== settings.secretIds.join('|')) {
+                settings.secretIds = next;
+                try { save(); } catch { /* ignore */ }
+            }
+        }
+
         async function pruneOtherCustomSecrets(keepId) {
+            if (keepId) rememberPluginSecret(keepId);
             for (let round = 0; round < 6; round++) {
                 const list = await readCustomSecrets();
-                if (list.length <= 1) return list;
-                const keep = (keepId && list.find((x) => x && x.id === keepId))
-                    || list.find((x) => x && x.active)
-                    || list[list.length - 1];
+                const pluginList = list.filter(isPluginSecret);
+                if (pluginList.length <= 1) {
+                    syncKnownPluginSecrets(list, keepId || (pluginList[0] && pluginList[0].id));
+                    return list;
+                }
+                const keep = (keepId && pluginList.find((x) => x && x.id === keepId))
+                    || pluginList.find((x) => x && x.active)
+                    || pluginList[pluginList.length - 1];
                 let removed = 0;
-                for (const item of list) {
+                for (const item of pluginList) {
                     if (!item || !item.id || !keep || item.id === keep.id) continue;
                     if (await deleteCustomSecret(item.id)) removed += 1;
                 }
+                syncKnownPluginSecrets(await readCustomSecrets(), keep && keep.id);
                 if (!removed) break;
                 await sleep(30);
             }
-            return readCustomSecrets();
+            const finalList = await readCustomSecrets();
+            syncKnownPluginSecrets(finalList, keepId);
+            return finalList;
+        }
+
+        async function deletePluginCustomSecrets() {
+            const list = await readCustomSecrets();
+            for (const item of list.filter(isPluginSecret)) {
+                if (item && item.id) await deleteCustomSecret(item.id);
+            }
+            settings.secretIds = [];
+            try { save(); } catch { /* ignore */ }
+            await refreshSecretState();
         }
 
         async function writeKey(key) {
@@ -210,23 +301,26 @@
             return queueSecretWrite(async () => {
                 const mod = await loadSecretsModule();
 
-                // 空 Key：清空槽位后同步状态
+                // 空 Key：只清本插件自己的槽位；不删除用户在酒馆原生界面保存的 Key
                 if (!value) {
-                    const list = await readCustomSecrets();
-                    for (const item of list) {
-                        if (item && item.id) await deleteCustomSecret(item.id);
-                        else await deleteCustomSecret();
-                    }
-                    await refreshSecretState();
+                    await deletePluginCustomSecrets();
                     return;
                 }
 
                 // 1) 先写入新密钥（成为 active），绝不能先删光再写
                 let keepId = null;
                 if (mod && typeof mod.writeSecret === 'function') {
-                    keepId = await mod.writeSecret(SECRET_KEY_CUSTOM, value, SECRET_LABEL);
+                    keepId = normalizeSecretId(await mod.writeSecret(SECRET_KEY_CUSTOM, value, SECRET_LABEL));
+                    await refreshSecretState();
                     if (!keepId) {
-                        // writeSecret 失败时回退裸 API
+                        // 有些 ST 版本 writeSecret 不返回 id：先从 secret_state/read 里找刚写入的插件条目，找不到再回退裸 API，避免重复追加
+                        const list = await readCustomSecrets();
+                        const pluginList = list.filter(isPluginSecret);
+                        const hit = pluginList.find((x) => x && x.active) || pluginList[pluginList.length - 1];
+                        keepId = normalizeSecretId(hit);
+                    }
+                    if (!keepId) {
+                        // writeSecret 失败或无法定位时回退裸 API
                         const res = await fetchTimeout('/api/secrets/write', {
                             method: 'POST',
                             headers: ctx.getRequestHeaders(),
@@ -235,7 +329,7 @@
                         if (!res.ok) throw new Error('写入密钥失败: HTTP ' + res.status);
                         try {
                             const data = await res.json();
-                            keepId = data && data.id;
+                            keepId = normalizeSecretId(data);
                         } catch { /* ignore */ }
                         await refreshSecretState();
                     }
@@ -248,7 +342,7 @@
                     if (!res.ok) throw new Error('写入密钥失败: HTTP ' + res.status);
                     try {
                         const data = await res.json();
-                        keepId = data && data.id;
+                        keepId = normalizeSecretId(data);
                     } catch { /* ignore */ }
                     await refreshSecretState();
                 }
@@ -265,7 +359,7 @@
         let applyBusy = false;
 
         let applyBusyToastAt = 0;
-        async function applyProfile(p) {
+        async function applyProfile(p, modelOverride) {
             if (applyBusy) {
                 if (Date.now() - applyBusyToastAt > 1200) {
                     applyBusyToastAt = Date.now();
@@ -280,20 +374,25 @@
                 if (!url) throw new Error('站点 URL 为空');
                 if (!key) toastr.warning('该站点未保存 API Key，连接可能失败', 'API 快切');
 
-                // 先切源再写 URL/Key，避免源切换时清空；新版/移动端 ST 可能会异步重建表单，需等输入框出现
-                $('#main_api').val('openai').trigger('change');
-                $('#chat_completion_source').val('custom').trigger('change');
+                // 先切源再写 URL/Key，避免源切换时清空；只有值真的不同才 trigger，避免 ST 弹出无意义的“预设切换”提示
+                const mainChanged = setSelectValueIfNeeded('#main_api', 'openai');
+                if (mainChanged) await sleep(120);
+                const $source = await waitForElement('#chat_completion_source', 1500);
+                if ($source.length && String($source.val() || '') !== 'custom') {
+                    $source.val('custom').trigger('change');
+                    await sleep(120);
+                }
                 const $urlInput = await waitForElement('#custom_api_url_text', 2500);
                 if (!$urlInput.length) {
                     throw new Error('未找到自定义接口输入框，请确认酒馆版本（需 1.12+）');
                 }
-                await sleep(120);
 
-                // 只写一次密钥库（覆盖同一条），URL/模型写进表单
+                // 只写一次密钥库（覆盖本插件自己的槽位），URL/模型写进表单
                 await writeKey(key);
                 $urlInput.val(url).trigger('input').trigger('change');
-                // 模型字段始终写入（含清空），避免沿用上一站点模型
-                $('#custom_model_id').val(String(p.model || '')).trigger('input').trigger('change');
+                // 模型字段始终写入（含清空），避免沿用上一站点模型；支持同站多模型快捷选择
+                const targetModel = String(modelOverride !== undefined ? modelOverride : (p.model || '')).trim();
+                $('#custom_model_id').val(targetModel).trigger('input').trigger('change');
                 // 关键关键输入框！Connect 看到有值会再 writeSecret 追加一条
                 // 密钥已在 secrets 里激活，custom 源允许 keyless 继续连接
                 $('#api_key_custom').val('').trigger('input').trigger('change');
@@ -305,7 +404,7 @@
                 if ($btn.length) $btn.trigger('click');
                 else toastr.warning('未找到 Connect 按钮，已写入 URL/Key，请手动点连接');
 
-                toastr.success('已切换到「' + p.name + '」', 'API 快切');
+                toastr.success('已切换到「' + p.name + (targetModel ? ' · ' + targetModel : '') + '」', 'API 快切');
                 renderAll();
                 // Connect 异步改 DOM 后补刷一次高亮
                 setTimeout(() => { try { renderAll(); } catch { /* ignore */ } }, 400);
@@ -1050,9 +1149,41 @@
             return out;
         }
 
+        function isModelFolded(p) {
+            if (!p || !p.id) return true;
+            return settings.modelCollapsed[p.id] !== false;
+        }
+
+        function toggleModelFold(p) {
+            if (!p || !p.id) return;
+            settings.modelCollapsed[p.id] = !isModelFolded(p);
+            save();
+        }
+
+        function setProfileModels(p, models, preferred) {
+            const list = uniqStrings([preferred, ...splitModelValues(models)]);
+            p.models = list;
+            p.model = list[0] || '';
+        }
+
+        function appendModelToInput(selector, model) {
+            const $input = $(selector);
+            const list = splitModelValues($input.val(), model);
+            $input.val(list.join('\n')).trigger('input').trigger('change');
+            return list;
+        }
+
+        function modelSummary(models) {
+            if (!models.length) return '';
+            if (models.length === 1) return models[0];
+            return models[0] + ' +' + (models.length - 1);
+        }
+
         /* ---------------- 设置面板：配置卡片 ---------------- */
         function profileCard(p) {
             const active = isActive(p);
+            const models = profileModels(p);
+            const folded = isModelFolded(p);
             const card = $('<div class="aqs-card"></div>').toggleClass('aqs-active', active);
 
             const head = $('<div class="aqs-card-head"></div>');
@@ -1064,22 +1195,49 @@
             $('<div class="aqs-card-url"></div>').text(p.url).appendTo(card);
 
             const meta = $('<div class="aqs-card-meta"></div>');
-            if (p.model) $('<span class="aqs-chip aqs-chip-model"></span>').text(p.model).attr('title', p.model).appendTo(meta);
+            if (models.length) $('<span class="aqs-chip aqs-chip-model"></span>').text(modelSummary(models)).attr('title', models.join('\n')).appendTo(meta);
+            if (models.length > 1) $('<span class="aqs-chip aqs-chip-dim"></span>').text(models.length + ' MODELS').appendTo(meta);
             $('<span class="aqs-chip aqs-chip-dim"></span>').text(p.key ? 'KEY ✓' : 'NO KEY').appendTo(meta);
             card.append(meta);
 
+            if (models.length > 1 && !folded) {
+                const modelBox = $('<div class="aqs-card-models"></div>');
+                for (const m of models) {
+                    $('<button type="button" class="menu_button aqs-btn aqs-model-choice"></button>')
+                        .toggleClass('aqs-active', isActiveChoice(p, m))
+                        .text(m)
+                        .attr('title', '切换到模型：' + m)
+                        .on('click', (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            applyProfile(p, m);
+                        })
+                        .appendTo(modelBox);
+                }
+                card.append(modelBox);
+            }
+
             const btns = $('<div class="aqs-card-btns"></div>');
-            $('<button class="menu_button aqs-btn aqs-btn-primary" title="切换到此配置"><i class="fa-solid fa-plug"></i> 使用</button>')
+            $('<button class="menu_button aqs-btn aqs-btn-primary" title="切换到默认模型"><i class="fa-solid fa-plug"></i> 使用</button>')
                 .on('click', () => applyProfile(p)).appendTo(btns);
-            $('<button class="menu_button aqs-btn" title="从该接口获取模型列表并选择"><i class="fa-solid fa-microchip"></i></button>')
+            if (models.length > 1) {
+                $('<button class="menu_button aqs-btn" title="展开 / 折叠该站模型"><i class="fa-solid fa-layer-group"></i> 模型</button>')
+                    .on('click', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        toggleModelFold(p);
+                        renderAll();
+                    }).appendTo(btns);
+            }
+            $('<button class="menu_button aqs-btn" title="从该接口获取模型列表并设为默认模型"><i class="fa-solid fa-microchip"></i></button>')
                 .on('click', () => openModelPicker(p.url, p.key, (m) => {
-                    p.model = m;
+                    setProfileModels(p, profileModels(p), m);
                     save();
                     renderAll();
                     if (isActive(p)) {
-                        applyProfile(p);
+                        applyProfile(p, m);
                     } else {
-                        toastr.success('已为「' + p.name + '」选择模型：' + m);
+                        toastr.success('已为「' + p.name + '」选择默认模型：' + m);
                     }
                 })).appendTo(btns);
             $('<button class="menu_button aqs-btn" title="编辑"><i class="fa-solid fa-pen"></i></button>')
@@ -1088,6 +1246,7 @@
                 .on('click', () => {
                     if (!confirm('确定删除「' + p.name + '」？')) return;
                     settings.profiles = settings.profiles.filter((x) => x.id !== p.id);
+                    if (p.id) delete settings.modelCollapsed[p.id];
                     if (editingId === p.id) resetForm();
                     save();
                     renderAll();
@@ -1268,7 +1427,7 @@
             $('#aqs_name').val(p.name);
             $('#aqs_url').val(p.url);
             $('#aqs_key').val(p.key || '');
-            $('#aqs_model').val(p.model || '');
+            $('#aqs_model').val(profileModels(p).join('\n'));
             if (p.group && groupNames().includes(p.group)) setGroupState(p.group, false);
             else if (p.group) setGroupState('', true, p.group);
             else setGroupState('', false);
@@ -1292,7 +1451,8 @@
             const name = String($('#aqs_name').val() || '').trim();
             const url = normUrl($('#aqs_url').val());
             const key = String($('#aqs_key').val() || '').trim();
-            const model = String($('#aqs_model').val() || '').trim();
+            const models = splitModelValues($('#aqs_model').val());
+            const model = models[0] || '';
             const group = currentGroupValue();
 
             if (!name || !url) { toastr.warning('名称和 URL 必填'); return; }
@@ -1303,16 +1463,16 @@
                 if (!p) { resetForm(); return; }
                 const dup = settings.profiles.find((x) => x.name === name && x.id !== editingId);
                 if (dup) { toastr.warning('已存在同名站点「' + name + '」'); return; }
-                Object.assign(p, { name, url, key, model, group });
+                Object.assign(p, { name, url, key, model, models, group });
                 toastr.success('已更新「' + name + '」');
             } else {
                 const dup = settings.profiles.find((x) => x.name === name);
                 if (dup) {
                     if (!confirm('已存在同名站点「' + name + '」，覆盖它吗？')) return;
-                    Object.assign(dup, { url, key, model, group });
+                    Object.assign(dup, { url, key, model, models, group });
                     toastr.success('已覆盖「' + name + '」');
                 } else {
-                    settings.profiles.push({ id: uid(), name, url, key, model, group });
+                    settings.profiles.push({ id: uid(), name, url, key, model, models, group });
                     toastr.success('已保存「' + name + '」');
                 }
             }
@@ -1344,11 +1504,13 @@
                     let added = 0, updated = 0;
                     for (const item of arr) {
                         if (!item || typeof item.name !== 'string' || typeof item.url !== 'string') continue;
+                        const models = splitModelValues(item.model, item.models);
                         const clean = {
                             name: String(item.name || '').trim(),
                             url: normUrl(item.url),
                             key: typeof item.key === 'string' ? item.key : String(item.key || ''),
-                            model: typeof item.model === 'string' ? item.model : String(item.model || ''),
+                            model: models[0] || '',
+                            models,
                             group: typeof item.group === 'string' ? item.group.trim() : '',
                         };
                         if (!clean.name || !clean.url) continue;
@@ -1387,22 +1549,62 @@
             }
             const sliced = slicePage(flat, cur);
 
-            const addItem = (p) => {
-                const item = $('<div class="aqs-qp-item"></div>').toggleClass('aqs-active', isActive(p));
-                const main = $('<div class="aqs-qp-main"></div>').appendTo(item);
-                $('<span class="aqs-qp-name"></span>').text(p.name).appendTo(main);
-                if (p.model) $('<span class="aqs-qp-model"></span>').text(p.model).attr('title', p.model).appendTo(main);
-                item.attr('title', p.model ? (p.name + ' · ' + p.model) : p.name);
+            const bindQpClick = (item, handler) => {
                 item.on('pointerdown mousedown touchstart click', async (e) => {
                     // down 阶段只拦冒泡，避免魔法棒菜单被当成点外部关掉；勿 preventDefault，否则手机可能不出 click
                     e.stopPropagation();
                     if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
                     if (e.type !== 'click') return;
                     e.preventDefault();
-                    // 快捷面板保持打开，便于连续切换；点面板外 / 标题叉号 / Esc 才关闭
-                    await applyProfile(p);
+                    await handler(e);
                 });
+            };
+
+            const addItem = (p) => {
+                const models = profileModels(p);
+                const folded = isModelFolded(p);
+                const multi = models.length > 1;
+                const item = $('<div class="aqs-qp-item"></div>')
+                    .toggleClass('aqs-active', isActive(p))
+                    .toggleClass('aqs-has-models', multi);
+                const main = $('<div class="aqs-qp-main"></div>').appendTo(item);
+                $('<span class="aqs-qp-name"></span>').text(p.name).appendTo(main);
+                if (models.length) {
+                    $('<span class="aqs-qp-model"></span>')
+                        .text(multi ? (models.length + ' 个模型 · ' + modelSummary(models)) : models[0])
+                        .attr('title', models.join('\n'))
+                        .appendTo(main);
+                }
+                if (multi) {
+                    $('<span class="aqs-qp-chevron"></span>').html('<i class="fa-solid ' + (folded ? 'fa-chevron-right' : 'fa-chevron-down') + '"></i>').appendTo(item);
+                    item.attr('title', '展开 / 折叠模型：' + p.name);
+                    bindQpClick(item, async () => {
+                        toggleModelFold(p);
+                        if (key === 'quick') {
+                            renderQuickPanel();
+                            requestAnimationFrame(() => layoutQuickPanel(document.getElementById('aqs_wand_btn')));
+                        } else renderApiEmbed();
+                    });
+                } else {
+                    item.attr('title', models[0] ? (p.name + ' · ' + models[0]) : p.name);
+                    bindQpClick(item, async () => applyProfile(p, models[0] || undefined));
+                }
                 $root.append(item);
+
+                if (multi && !folded) {
+                    const modelList = $('<div class="aqs-qp-model-list"></div>');
+                    for (const m of models) {
+                        const choice = $('<div class="aqs-qp-item aqs-qp-model-choice"></div>')
+                            .toggleClass('aqs-active', isActiveChoice(p, m))
+                            .attr('title', '切换到：' + p.name + ' · ' + m);
+                        const choiceMain = $('<div class="aqs-qp-main"></div>').appendTo(choice);
+                        $('<span class="aqs-qp-name"></span>').text(m).appendTo(choiceMain);
+                        $('<span class="aqs-qp-model"></span>').text(p.name).appendTo(choiceMain);
+                        bindQpClick(choice, async () => applyProfile(p, m));
+                        modelList.append(choice);
+                    }
+                    $root.append(modelList);
+                }
             };
 
             let lastGroup = null;
@@ -1830,6 +2032,114 @@
             bindQuickPanelChrome();
         }
 
+        function profileNameFromUrl(url) {
+            try {
+                const u = new URL(url);
+                return u.hostname.replace(/^www\./i, '') || '自定义接口';
+            } catch {
+                return '自定义接口';
+            }
+        }
+
+        function uniqueProfileName(base) {
+            const clean = String(base || '').trim() || '自定义接口';
+            const used = new Set(settings.profiles.map((p) => p.name));
+            if (!used.has(clean)) return clean;
+            for (let i = 2; i < 1000; i++) {
+                const name = clean + ' ' + i;
+                if (!used.has(name)) return name;
+            }
+            return clean + ' ' + Date.now().toString(36);
+        }
+
+        let lastNativeSyncSig = '';
+        let lastNativeSyncAt = 0;
+
+        function captureNativeApiSnapshot() {
+            if (!settings.autoSyncNative || applyBusy) return null;
+            if (String($('#main_api').val() || '') !== 'openai') return null;
+            if (String($('#chat_completion_source').val() || '') !== 'custom') return null;
+            const url = normUrl($('#custom_api_url_text').val());
+            if (!url || !/^https?:\/\//i.test(url)) return null;
+            return {
+                url,
+                key: String($('#api_key_custom').val() || '').trim(),
+                model: String($('#custom_model_id').val() || '').trim(),
+            };
+        }
+
+        function upsertNativeProfile(snap) {
+            if (!settings.autoSyncNative || applyBusy || !snap) return false;
+            const url = normUrl(snap.url);
+            if (!url || !/^https?:\/\//i.test(url)) return false;
+            const key = String(snap.key || '').trim();
+            const models = splitModelValues(snap.model);
+            // 没有可同步的新信息时不打扰用户；Key 若已被酒馆清空，也无法安全读回明文
+            if (!key && !models.length) return false;
+
+            const sig = [url, key ? 'key' : '', models.join(',')].join('|');
+            if (sig === lastNativeSyncSig && Date.now() - lastNativeSyncAt < 5000) return false;
+            lastNativeSyncSig = sig;
+            lastNativeSyncAt = Date.now();
+
+            let changed = false;
+            const hit = settings.profiles.find((p) => normUrl(p.url) === url);
+            if (hit) {
+                if (key && hit.key !== key) { hit.key = key; changed = true; }
+                const merged = splitModelValues(profileModels(hit), models);
+                if (merged.join('\n') !== profileModels(hit).join('\n')) {
+                    hit.models = merged;
+                    if (!hit.model) hit.model = merged[0] || '';
+                    changed = true;
+                }
+                if (changed) {
+                    save();
+                    renderAll();
+                    toastr.success('已同步原生连接到「' + hit.name + '」', 'API 快切');
+                }
+                return changed;
+            }
+
+            const name = uniqueProfileName(profileNameFromUrl(url));
+            settings.profiles.push({
+                id: uid(),
+                name,
+                url,
+                key,
+                model: models[0] || '',
+                models,
+                group: '',
+            });
+            save();
+            renderAll();
+            toastr.success('已从原生 API 面板同步「' + name + '」', 'API 快切');
+            return true;
+        }
+
+        function bindNativeSync() {
+            $(document).off('pointerdown.aqs_native_sync mousedown.aqs_native_sync touchstart.aqs_native_sync click.aqs_native_sync', '#api_button_openai');
+            $(document).on('pointerdown.aqs_native_sync mousedown.aqs_native_sync touchstart.aqs_native_sync', '#api_button_openai', function () {
+                const snap = captureNativeApiSnapshot();
+                if (snap) $(this).data('aqs-native-snap', snap);
+            });
+            $(document).on('click.aqs_native_sync', '#api_button_openai', function () {
+                if (!settings.autoSyncNative || applyBusy) return;
+                const snap = $(this).data('aqs-native-snap') || captureNativeApiSnapshot();
+                $(this).removeData('aqs-native-snap');
+                if (!snap) return;
+                // 等 ST 自己完成连接 / 清空可见 Key 后再合并；再次确认当前 URL 没变，避免误同步旧输入
+                setTimeout(() => {
+                    try {
+                        if (applyBusy) return;
+                        if (normUrl($('#custom_api_url_text').val()) !== snap.url) return;
+                        upsertNativeProfile(snap);
+                    } catch (e) {
+                        console.warn('[API快切] 原生同步失败', e);
+                    }
+                }, 1800);
+            });
+        }
+
         function watchUiHosts() {
             ensureFloatingPanel();
             ensureApiEmbed();
@@ -1903,7 +2213,7 @@
                   <input id="aqs_url" class="text_pole" type="text" placeholder="API URL（https://.../v1）" autocomplete="off">
                   <input id="aqs_key" class="text_pole" type="password" placeholder="API Key" autocomplete="off">
                   <div class="aqs-model-row">
-                    <input id="aqs_model" class="text_pole" type="text" placeholder="模型 ID（可留空）" autocomplete="off">
+                    <textarea id="aqs_model" class="text_pole" rows="2" placeholder="模型 ID（可多个：换行 / 逗号分隔，首个为默认）" autocomplete="off"></textarea>
                     <div id="aqs_fetch_models" class="menu_button menu_button_icon aqs-btn" title="从接口拉取模型列表">
                       <i class="fa-solid fa-list"></i> 获取模型
                     </div>
@@ -1919,6 +2229,10 @@
                       取消编辑
                     </div>
                   </div>
+                  <label class="aqs-check-row" title="在酒馆原生 API 面板填写 URL / Key / 模型并点 Connect 后，自动保存到 API 快切">
+                    <input id="aqs_auto_sync_native" type="checkbox">
+                    <span>原生 API 连接后自动同步到快切</span>
+                  </label>
                   <div class="aqs-io-btns">
                     <div id="aqs_export" class="menu_button menu_button_icon aqs-btn">
                       <i class="fa-solid fa-file-export"></i> 导出
@@ -1967,10 +2281,17 @@
             });
             $('#aqs_fetch_models').off('click.aqs').on('click.aqs', () => {
                 openModelPicker($('#aqs_url').val(), $('#aqs_key').val(), (m) => {
-                    $('#aqs_model').val(m);
-                    toastr.success('已选择：' + m, 'API 快切');
+                    const list = appendModelToInput('#aqs_model', m);
+                    toastr.success('已加入：' + m + (list.length > 1 ? '（共 ' + list.length + ' 个模型）' : ''), 'API 快切');
                 });
             });
+            $('#aqs_auto_sync_native')
+                .prop('checked', !!settings.autoSyncNative)
+                .off('change.aqs')
+                .on('change.aqs', function () {
+                    settings.autoSyncNative = !!this.checked;
+                    save();
+                });
             $('#aqs_update_btn').off('click.aqs').on('click.aqs', async () => {
                 if (updState === 'updated') {
                     location.reload();
@@ -1982,6 +2303,7 @@
 
 
         // 初始化 UI 宿主（魔法棒 / 插头嵌入 / 浮层）
+        bindNativeSync();
         watchUiHosts();
         renderList();
         setTimeout(() => checkUpdate(true), 3000);

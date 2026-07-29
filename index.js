@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '3.7.0';
+    const VERSION = '3.7.1';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -986,6 +986,7 @@
                 </div>`);
             // 挂到 <html>，避开 body 内 transform/overflow 把 fixed 算歪
             $(document.documentElement).append(overlay);
+            overlay.find('.aqs-modal-filter').focus();
             const host = overlay[0];
             const relayout = () => {
                 try { layoutModelModal(host); } catch (e) { console.error('[API快切] layout', e); }
@@ -1010,7 +1011,10 @@
             const prevOverflow = document.body.style.overflow;
             const prevTouch = document.body.style.touchAction;
             const prevHtmlOverflow = document.documentElement.style.overflow;
+            let isClosed = false;
             const close = () => {
+                if (isClosed) return;
+                isClosed = true;
                 document.body.style.overflow = prevOverflow;
                 document.body.style.touchAction = prevTouch;
                 document.documentElement.style.overflow = prevHtmlOverflow;
@@ -1021,6 +1025,7 @@
                     window.visualViewport.removeEventListener('scroll', onResize);
                 }
                 overlay.remove();
+                $('#aqs_model_modal').remove();
                 $(document).off('keydown.aqsmodal');
             };
             document.body.style.overflow = 'hidden';
@@ -1030,13 +1035,18 @@
             // 而关闭整个扩展设置面板，导致选完模型被踢回主界面 —— 全部拦截
             overlay.on('pointerdown pointerup mousedown mouseup click touchstart touchend wheel', (e) => {
                 e.stopPropagation();
-                if ((e.type === 'pointerdown' || e.type === 'mousedown' || e.type === 'touchstart') && e.target === overlay[0]) close();
+                if (e.target === overlay[0]) {
+                    if (e.type === 'click' || e.type === 'pointerdown' || e.type === 'mousedown' || e.type === 'touchstart' || e.type === 'pointerup' || e.type === 'touchend') {
+                        close();
+                    }
+                }
             });
             // 列表内部允许滚动，外层不滚动页面
             overlay.find('.aqs-modal-list').on('touchmove wheel', (e) => e.stopPropagation());
-            overlay.find('.aqs-modal-close').on('click keydown', (e) => {
-                if (e.type === 'click' || e.key === 'Enter' || e.key === ' ') {
+            overlay.find('.aqs-modal-close').on('click keydown pointerup touchend', (e) => {
+                if (e.type === 'click' || e.type === 'pointerup' || e.type === 'touchend' || e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault();
+                    e.stopPropagation();
                     close();
                 }
             });
@@ -1092,7 +1102,22 @@
                             relayout();
                         };
                         render('');
-                        overlay.find('.aqs-modal-filter').off('input.aqs').on('input.aqs', function () { render(this.value); });
+                        overlay.find('.aqs-modal-filter')
+                            .off('input.aqs').on('input.aqs', function () { render(this.value); })
+                            .off('keydown.aqs').on('keydown.aqs', function (e) {
+                                if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    const firstItem = list.find('.aqs-modal-item').first();
+                                    if (firstItem.length) {
+                                        firstItem.trigger('click');
+                                    }
+                                } else if (e.key === 'Escape') {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    close();
+                                }
+                            });
                         relayout();
                         setTimeout(relayout, 40);
                         toastr.success('共 ' + models.length + ' 个模型', 'API 快切');

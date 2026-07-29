@@ -1412,6 +1412,7 @@
     opacity: 1;
 }
 
+#aqs_api_embed.aqs-collapsed #aqs_embed_search,
 #aqs_api_embed.aqs-collapsed .aqs-api-embed-body,
 #aqs_api_embed.aqs-collapsed .aqs-api-embed-foot {
     display: none;

@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '3.6.0';
+    const VERSION = '3.6.1';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -1012,6 +1012,7 @@
                     window.visualViewport.removeEventListener('scroll', onResize);
                 }
                 overlay.remove();
+                $('#aqs_model_modal').remove();
                 $(document).off('keydown.aqsmodal');
             };
             document.body.style.overflow = 'hidden';
@@ -1021,15 +1022,28 @@
             // 而关闭整个扩展设置面板，导致选完模型被踢回主界面 —— 全部拦截
             overlay.on('pointerdown pointerup mousedown mouseup click touchstart touchend wheel', (e) => {
                 e.stopPropagation();
-                if ((e.type === 'pointerdown' || e.type === 'mousedown' || e.type === 'touchstart') && e.target === overlay[0]) close();
+                if ((e.type === 'pointerdown' || e.type === 'mousedown' || e.type === 'touchstart') && e.target === overlay[0]) {
+                    overlay.data('aqs-bg-down', 1);
+                }
+                if (e.target === overlay[0] && (e.type === 'pointerup' || e.type === 'touchend' || e.type === 'click') && overlay.data('aqs-bg-down')) {
+                    overlay.removeData('aqs-bg-down');
+                    close();
+                }
             });
             // 列表内部允许滚动，外层不滚动页面
             overlay.find('.aqs-modal-list').on('touchmove wheel', (e) => e.stopPropagation());
-            overlay.find('.aqs-modal-close').on('click keydown', (e) => {
-                if (e.type === 'click' || e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    close();
+            overlay.find('.aqs-modal-close').on('pointerdown mousedown touchstart pointerup mouseup click touchend keydown', (e) => {
+                if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Escape') return;
+                e.preventDefault();
+                e.stopPropagation();
+                if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+                if (e.type === 'click' && $(e.currentTarget).data('aqs-ptr-handled')) return;
+                if (e.type === 'pointerdown' || e.type === 'mousedown' || e.type === 'touchstart') {
+                    if (e.pointerType === 'mouse' && e.button !== 0) return;
+                    $(e.currentTarget).data('aqs-ptr-handled', 1);
+                    setTimeout(() => $(e.currentTarget).removeData('aqs-ptr-handled'), 400);
                 }
+                close();
             });
             $(document).on('keydown.aqsmodal', (e) => {
                 if (e.key !== 'Escape') return;
@@ -1045,7 +1059,9 @@
                 const box = $('<div class="aqs-empty aqs-modal-error"></div>');
                 box.append($('<div></div>').text(String(msg || '获取失败')));
                 $('<button type="button" class="menu_button aqs-btn aqs-btn-primary" style="margin-top:12px;">重试</button>')
-                    .on('click', () => {
+                    .on('pointerup click', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
                         list.html('<div class="aqs-modal-loading"><i class="fa-solid fa-circle-notch fa-spin"></i>&nbsp; SCANNING…</div>');
                         relayout();
                         doFetch();
@@ -1070,20 +1086,39 @@
                             for (const m of subset) {
                                 $('<div class="aqs-modal-item" tabindex="0" role="option"></div>').text(m)
                                     .css({ color: '#ffffff', webkitTextFillColor: '#ffffff', opacity: 1 })
-                                    .on('click', () => { close(); onPick(m); })
-                                    .on('keydown', (e) => {
-                                        if (e.key === 'Enter' || e.key === ' ') {
-                                            e.preventDefault();
-                                            close();
-                                            onPick(m);
+                                    .on('pointerup click keydown', (e) => {
+                                        if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+                                        if (e.type === 'click' && $(e.currentTarget).data('aqs-ptr-handled')) return;
+                                        if (e.type === 'pointerup') {
+                                            if (e.pointerType === 'mouse' && e.button !== 0) return;
+                                            $(e.currentTarget).data('aqs-ptr-handled', 1);
+                                            setTimeout(() => $(e.currentTarget).removeData('aqs-ptr-handled'), 400);
                                         }
+                                        close();
+                                        onPick(m);
                                     })
                                     .appendTo(list);
                             }
                             relayout();
                         };
                         render('');
-                        overlay.find('.aqs-modal-filter').off('input.aqs').on('input.aqs', function () { render(this.value); });
+                        overlay.find('.aqs-modal-filter')
+                            .off('input.aqs keydown.aqs')
+                            .on('input.aqs', function () { render(this.value); })
+                            .on('keydown.aqs', function (e) {
+                                if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    const firstItem = list.find('.aqs-modal-item').first();
+                                    if (firstItem.length) {
+                                        firstItem.trigger('click');
+                                    } else {
+                                        close();
+                                    }
+                                }
+                            });
                         relayout();
                         setTimeout(relayout, 40);
                         toastr.success('共 ' + models.length + ' 个模型', 'API 快切');

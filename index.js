@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '3.5.0';
+    const VERSION = '3.5.1';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -72,6 +72,16 @@
         const normUrl = (u) => String(u || '').trim().replace(/\/+$/, '');
         const currentUrl = () => normUrl($('#custom_api_url_text').val());
         const isActive = (p) => !!currentUrl() && currentUrl() === normUrl(p.url);
+
+        async function waitForElement(selector, ms = 2500) {
+            const deadline = Date.now() + ms;
+            let $el = $(selector);
+            while (!$el.length && Date.now() < deadline) {
+                await sleep(50);
+                $el = $(selector);
+            }
+            return $el;
+        }
 
         function fetchTimeout(url, opts, ms) {
             const ac = new AbortController();
@@ -265,22 +275,23 @@
             }
             applyBusy = true;
             try {
-                if (!$('#custom_api_url_text').length) {
-                    throw new Error('未找到自定义接口输入框，请确认酒馆版本（需 1.12+）');
-                }
                 const url = normUrl(p.url);
                 const key = String(p.key || '');
                 if (!url) throw new Error('站点 URL 为空');
                 if (!key) toastr.warning('该站点未保存 API Key，连接可能失败', 'API 快切');
 
-                // 先切源再写 URL/Key，避免源切换时清空
+                // 先切源再写 URL/Key，避免源切换时清空；新版/移动端 ST 可能会异步重建表单，需等输入框出现
                 $('#main_api').val('openai').trigger('change');
                 $('#chat_completion_source').val('custom').trigger('change');
+                const $urlInput = await waitForElement('#custom_api_url_text', 2500);
+                if (!$urlInput.length) {
+                    throw new Error('未找到自定义接口输入框，请确认酒馆版本（需 1.12+）');
+                }
                 await sleep(120);
 
                 // 只写一次密钥库（覆盖同一条），URL/模型写进表单
                 await writeKey(key);
-                $('#custom_api_url_text').val(url).trigger('input').trigger('change');
+                $urlInput.val(url).trigger('input').trigger('change');
                 // 模型字段始终写入（含清空），避免沿用上一站点模型
                 $('#custom_model_id').val(String(p.model || '')).trigger('input').trigger('change');
                 // 关键关键输入框！Connect 看到有值会再 writeSecret 追加一条
@@ -675,8 +686,11 @@
                 if (wroteProxyKey) {
                     const restore = (activeProfile && String(activeProfile.key || '').trim()) || prevKey;
                     try {
-                        if (restore && restore !== useKey) {
-                            await writeKey(restore);
+                        if (restore) {
+                            if (restore !== useKey) await writeKey(restore);
+                        } else {
+                            // 当前连接原本没有自定义 Key 时，临时代理 Key 也要清掉，避免后续 Connect 误用
+                            await writeKey('');
                         }
                     } catch (e) {
                         console.warn('[API快切] 还原密钥失败', e);
@@ -1165,6 +1179,10 @@
             if (pager && pager.length) $host.append(pager);
         }
 
+        function groupPageKey(g) {
+            return '__group__:' + String(g || '');
+        }
+
         function makeGroupBox(g) {
             const items = settings.profiles.filter((p) => p.group === g);
             const collapsed = !!settings.groupCollapsed[g];
@@ -1182,7 +1200,7 @@
             box.append(head);
             const body = $('<div class="aqs-group-body"></div>');
             // 组内站点仍按 4 条分页，避免展开后一长串
-            if (!collapsed) appendPagedCards(body, items, g, renderList);
+            if (!collapsed) appendPagedCards(body, items, groupPageKey(g), renderList);
             box.append(body);
             return box;
         }
@@ -1193,9 +1211,9 @@
             for (const k of Object.keys(settings.groupCollapsed)) {
                 if (!names.includes(k)) delete settings.groupCollapsed[k];
             }
-            // 站点页 __sites__ / 组页 __groups__ / 表单芯片 __picker__ / 组内页码用分组名
-            // 兼容清理旧版 __main__ 等失效键
-            const keepKeys = new Set(['__sites__', '__groups__', '__picker__', ...names]);
+            // 站点页 __sites__ / 组页 __groups__ / 表单芯片 __picker__ / 组内页码用 namespaced key
+            // 兼容清理旧版 __main__、旧组名页码等失效键
+            const keepKeys = new Set(['__sites__', '__groups__', '__picker__', ...names.map(groupPageKey)]);
             for (const k of Object.keys(settings.pages.list)) {
                 if (keepKeys.has(k)) continue;
                 delete settings.pages.list[k];
@@ -1580,16 +1598,19 @@
             $title.append($('<span class="aqs-qp-title-text"><i class="fa-solid fa-shuffle"></i> API·SWITCH</span>'));
             const $close = $('<button type="button" class="aqs-qp-close" title="关闭快切（不关魔法棒菜单）" aria-label="关闭快切"><i class="fa-solid fa-xmark"></i></button>');
             // 必须拦截 pointerdown/mousedown：酒馆魔法棒菜单多半在 down 阶段判定「点外部」并整菜单关闭
-            $close.on('pointerdown mousedown touchstart pointerup mouseup click touchend', (e) => {
+            $close.on('pointerdown mousedown touchstart pointerup mouseup click touchend keydown', (e) => {
+                if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Escape') return;
                 e.preventDefault();
                 e.stopPropagation();
                 if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
                 if (e.type === 'click' && $close.data('aqs-ptr-handled')) return;
-                if (e.type === 'pointerdown' || e.type === 'mousedown' || e.type === 'touchstart') {
+                if (e.type === 'click' || e.type === 'keydown' || e.type === 'pointerdown' || e.type === 'mousedown' || e.type === 'touchstart') {
                     if (e.type === 'pointerdown' && e.pointerType === 'mouse' && e.button !== 0) return;
                     if (e.type === 'mousedown' && e.button !== 0) return;
-                    $close.data('aqs-ptr-handled', 1);
-                    setTimeout(() => $close.removeData('aqs-ptr-handled'), 400);
+                    if (e.type === 'pointerdown' || e.type === 'mousedown' || e.type === 'touchstart') {
+                        $close.data('aqs-ptr-handled', 1);
+                        setTimeout(() => $close.removeData('aqs-ptr-handled'), 400);
+                    }
                     closeQuickPanel();
                 }
             });
@@ -1951,7 +1972,9 @@
                 });
             });
             $('#aqs_update_btn').off('click.aqs').on('click.aqs', async () => {
-                if (updState === 'available' || updState === 'updated') await doUpdate();
+                if (updState === 'updated') {
+                    location.reload();
+                } else if (updState === 'available') await doUpdate();
                 else await checkUpdate(false);
             });
         }

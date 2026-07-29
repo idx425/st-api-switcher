@@ -2264,3 +2264,60 @@
     color: #e8f0ff !important;
     -webkit-text-fill-color: #e8f0ff !important;
 }
+
+/* ========== v3.7.0: 搜索栏 ========== */
+.aqs-search-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+    position: relative;
+}
+.aqs-search-bar .aqs-search-input,
+.aqs-qp-search .aqs-search-input {
+    flex: 1;
+    min-width: 0;
+    padding: 7px 10px !important;
+    border-radius: 10px !important;
+    font-size: 13px !important;
+    background: rgba(255,255,255,0.08) !important;
+    border: 1px solid rgba(255,255,255,0.18) !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
+.aqs-search-bar .aqs-search-input::placeholder,
+.aqs-qp-search .aqs-search-input::placeholder {
+    color: rgba(255,255,255,0.45) !important;
+    -webkit-text-fill-color: rgba(255,255,255,0.45) !important;
+}
+.aqs-search-clear {
+    flex-shrink: 0;
+    width: 30px !important;
+    height: 30px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 0 !important;
+    border-radius: 8px !important;
+    background: rgba(255,255,255,0.08) !important;
+    border: 1px solid rgba(255,255,255,0.15) !important;
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
+}
+.aqs-search-clear:hover {
+    background: rgba(255,80,80,0.25) !important;
+}
+
+/* 快捷面板搜索栏 */
+.aqs-qp-search {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px 6px;
+    background: rgba(255,255,255,0.04);
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.aqs-qp-search .aqs-search-input {
+    padding: 6px 8px !important;
+    font-size: 13px !important;
+}

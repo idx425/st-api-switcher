@@ -1,5 +1,5 @@
 /* ============================================================
-   API 快切 · 高级暗色玻璃 v3.5.0
+   API 快切 · 高级暗色玻璃 v3.6.0
    设计语言：Dark Glassmorphism · 浅色主题强制可读 · 手机底部弹层
    布局：扩展设置单列卡片 + 分页（每页4条）· 模型名完整换行
    ============================================================ */
@@ -479,6 +479,40 @@
     min-width: 0;
 }
 
+.aqs-card-models {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 10px;
+    padding: 8px;
+    border: 1px solid rgb(129 140 248 / 18%);
+    border-radius: 12px;
+    background: rgb(129 140 248 / 5%);
+    max-height: min(34vh, 280px);
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+}
+
+.aqs-card-models .aqs-model-choice {
+    justify-content: flex-start;
+    width: 100%;
+    max-width: 100%;
+    min-height: 36px;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: 1.35;
+}
+
+.aqs-card-models .aqs-model-choice.aqs-active {
+    border-color: rgb(34 211 238 / 42%);
+    background: rgb(34 211 238 / 12%);
+    color: #ffffff;
+}
+
 /* ---- 分组容器 ---- */
 
 .aqs-group {
@@ -772,6 +806,31 @@
     white-space: nowrap;
 }
 
+.aqs-check-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 10px 0 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--aqs-line);
+    border-radius: 11px;
+    background: rgb(255 255 255 / 2.5%);
+    color: var(--aqs-fg-muted);
+    font-size: 0.86em;
+    line-height: 1.35;
+    user-select: none;
+}
+
+.aqs-check-row input {
+    flex: 0 0 auto;
+}
+
+.aqs-settings textarea.text_pole#aqs_model {
+    min-height: 46px;
+    resize: vertical;
+    line-height: 1.35;
+}
+
 .aqs-form-btns {
     display: flex;
     flex-wrap: wrap;
@@ -1017,6 +1076,41 @@
     overflow-wrap: anywhere;
     word-break: break-word;
     line-height: 1.35;
+}
+
+.aqs-qp-item.aqs-has-models {
+    align-items: center;
+}
+
+.aqs-qp-chevron {
+    flex: 0 0 auto;
+    align-self: center;
+    color: var(--aqs-fg-muted);
+    font-size: 0.78em;
+    padding-left: 4px;
+}
+
+.aqs-qp-model-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 2px 0 7px 15px;
+    padding-left: 8px;
+    border-left: 1px solid rgb(129 140 248 / 25%);
+}
+
+.aqs-qp-model-choice {
+    padding-left: 10px;
+    background: rgb(129 140 248 / 4%);
+}
+
+.aqs-qp-model-choice::before {
+    background: rgb(129 140 248 / 45%);
+}
+
+.aqs-qp-model-choice.aqs-active {
+    background: rgb(34 211 238 / 12%);
+    border-color: rgb(34 211 238 / 38%);
 }
 
 /* ---- 模型选择弹窗 ---- */

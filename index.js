@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '3.6.0';
+    const VERSION = '3.7.1';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -95,6 +95,7 @@
         }
 
         let editingId = null;
+        let searchQuery = '';  // 全局搜索关键词
 
         /* ---------------- 工具 ---------------- */
         const normUrl = (u) => String(u || '').trim().replace(/\/+$/, '');
@@ -102,6 +103,14 @@
         const currentModel = () => String($('#custom_model_id').val() || '').trim();
         const isActive = (p) => !!currentUrl() && currentUrl() === normUrl(p.url);
         const profileModels = (p) => splitModelValues(p && p.model, p && p.models);
+        const matchSearch = (p) => {
+            if (!searchQuery) return true;
+            const q = searchQuery.toLowerCase();
+            return p.name.toLowerCase().includes(q)
+                || p.url.toLowerCase().includes(q)
+                || profileModels(p).some((m) => m.toLowerCase().includes(q))
+                || (p.group || '').toLowerCase().includes(q);
+        };
         const isActiveChoice = (p, model) => isActive(p) && String(model || '') === currentModel();
 
         function setSelectValueIfNeeded(selector, value) {
@@ -977,6 +986,7 @@
                 </div>`);
             // 挂到 <html>，避开 body 内 transform/overflow 把 fixed 算歪
             $(document.documentElement).append(overlay);
+            overlay.find('.aqs-modal-filter').focus();
             const host = overlay[0];
             const relayout = () => {
                 try { layoutModelModal(host); } catch (e) { console.error('[API快切] layout', e); }
@@ -1001,7 +1011,10 @@
             const prevOverflow = document.body.style.overflow;
             const prevTouch = document.body.style.touchAction;
             const prevHtmlOverflow = document.documentElement.style.overflow;
+            let isClosed = false;
             const close = () => {
+                if (isClosed) return;
+                isClosed = true;
                 document.body.style.overflow = prevOverflow;
                 document.body.style.touchAction = prevTouch;
                 document.documentElement.style.overflow = prevHtmlOverflow;
@@ -1012,6 +1025,7 @@
                     window.visualViewport.removeEventListener('scroll', onResize);
                 }
                 overlay.remove();
+                $('#aqs_model_modal').remove();
                 $(document).off('keydown.aqsmodal');
             };
             document.body.style.overflow = 'hidden';
@@ -1021,13 +1035,18 @@
             // 而关闭整个扩展设置面板，导致选完模型被踢回主界面 —— 全部拦截
             overlay.on('pointerdown pointerup mousedown mouseup click touchstart touchend wheel', (e) => {
                 e.stopPropagation();
-                if ((e.type === 'pointerdown' || e.type === 'mousedown' || e.type === 'touchstart') && e.target === overlay[0]) close();
+                if (e.target === overlay[0]) {
+                    if (e.type === 'click' || e.type === 'pointerdown' || e.type === 'mousedown' || e.type === 'touchstart' || e.type === 'pointerup' || e.type === 'touchend') {
+                        close();
+                    }
+                }
             });
             // 列表内部允许滚动，外层不滚动页面
             overlay.find('.aqs-modal-list').on('touchmove wheel', (e) => e.stopPropagation());
-            overlay.find('.aqs-modal-close').on('click keydown', (e) => {
-                if (e.type === 'click' || e.key === 'Enter' || e.key === ' ') {
+            overlay.find('.aqs-modal-close').on('click keydown pointerup touchend', (e) => {
+                if (e.type === 'click' || e.type === 'pointerup' || e.type === 'touchend' || e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault();
+                    e.stopPropagation();
                     close();
                 }
             });
@@ -1083,7 +1102,22 @@
                             relayout();
                         };
                         render('');
-                        overlay.find('.aqs-modal-filter').off('input.aqs').on('input.aqs', function () { render(this.value); });
+                        overlay.find('.aqs-modal-filter')
+                            .off('input.aqs').on('input.aqs', function () { render(this.value); })
+                            .off('keydown.aqs').on('keydown.aqs', function (e) {
+                                if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    const firstItem = list.find('.aqs-modal-item').first();
+                                    if (firstItem.length) {
+                                        firstItem.trigger('click');
+                                    }
+                                } else if (e.key === 'Escape') {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    close();
+                                }
+                            });
                         relayout();
                         setTimeout(relayout, 40);
                         toastr.success('共 ' + models.length + ' 个模型', 'API 快切');
@@ -1343,7 +1377,7 @@
         }
 
         function makeGroupBox(g) {
-            const items = settings.profiles.filter((p) => p.group === g);
+            const items = settings.profiles.filter((p) => p.group === g && matchSearch(p));
             const collapsed = !!settings.groupCollapsed[g];
             const box = $('<div class="aqs-group"></div>').toggleClass('aqs-collapsed', collapsed);
             const head = $('<div class="aqs-group-head" title="点击展开/收起"></div>');
@@ -1378,44 +1412,75 @@
                 delete settings.pages.list[k];
             }
             renderGroupPicker();
-            if (!settings.profiles.length) {
-                list.append($('<div class="aqs-empty">还没有站点，在下方添加第一个吧</div>'));
-                return;
-            }
 
-            // 分层分页，保证整齐：
-            // 1) 未分组站点 >4 → 在「站点层」分页
-            // 2) 分组数 >4 → 在「组层」分页（折叠时也只显示当前页的组头）
-            // 3) 组内站点 >4 → 展开后在组内分页
-            // 不把站点与组混成一条流水线，避免布局忽长忽短
-            const ungrouped = settings.profiles.filter((p) => !p.group);
-            if (ungrouped.length) {
-                const sitesWrap = $('<div class="aqs-list-section aqs-list-sites"></div>');
-                appendPagedCards(sitesWrap, ungrouped, '__sites__', renderList);
-                list.append(sitesWrap);
-            }
+            // 搜索栏
+            const searchBar = $('<div class="aqs-search-bar"></div>');
+            const searchInput = $('<input id="aqs_search" class="text_pole aqs-search-input" type="text" placeholder="搜索站点（名称 / URL / 模型 / 分组）…" autocomplete="off">')
+                .val(searchQuery);
+            const searchClear = $('<div id="aqs_search_clear" class="menu_button menu_button_icon aqs-btn aqs-search-clear" title="清除搜索"><i class="fa-solid fa-xmark"></i></div>')
+                .toggle(!!searchQuery);
+            searchBar.append(searchInput, searchClear);
+            list.append(searchBar);
+            searchInput.on('input.aqs', function () {
+                searchQuery = String(this.value || '').trim();
+                $('#aqs_search_clear').toggle(!!searchQuery);
+                renderListContent();
+            });
+            searchClear.on('click.aqs', () => {
+                searchQuery = '';
+                $('#aqs_search').val('').trigger('input');
+            });
 
-            if (names.length) {
-                const groupsWrap = $('<div class="aqs-list-section aqs-list-groups"></div>');
-                const raw = settings.pages.list.__groups__ || 0;
-                const cur = clampPage(raw, names.length);
-                if (raw !== cur) {
-                    settings.pages.list.__groups__ = cur;
-                    save();
-                } else {
-                    settings.pages.list.__groups__ = cur;
+            renderListContent();
+
+            function renderListContent() {
+                // 移除搜索栏之后的内容
+                list.find('.aqs-list-section, .aqs-empty').remove();
+                const filtered = settings.profiles.filter(matchSearch);
+                if (!filtered.length) {
+                    if (searchQuery) {
+                        list.append($('<div class="aqs-empty">没有匹配「' + $('<span>').text(searchQuery).html() + '」的站点</div>'));
+                    } else {
+                        list.append($('<div class="aqs-empty">还没有站点，在下方添加第一个吧</div>'));
+                    }
+                    return;
                 }
-                const sliced = slicePage(names, cur);
-                for (const g of sliced.items) {
-                    groupsWrap.append(makeGroupBox(g));
+
+                // 分层分页，保证整齐：
+                // 1) 未分组站点 >4 → 在「站点层」分页
+                // 2) 分组数 >4 → 在「组层」分页（折叠时也只显示当前页的组头）
+                // 3) 组内站点 >4 → 展开后在组内分页
+                // 搜索时也按同样的分层逻辑
+                const ungrouped = filtered.filter((p) => !p.group);
+                if (ungrouped.length) {
+                    const sitesWrap = $('<div class="aqs-list-section aqs-list-sites"></div>');
+                    appendPagedCards(sitesWrap, ungrouped, '__sites__', renderListContent);
+                    list.append(sitesWrap);
                 }
-                const pager = makePager(sliced.page, sliced.total, (np) => {
-                    settings.pages.list.__groups__ = np;
-                    save();
-                    renderList();
-                });
-                if (pager && pager.length) groupsWrap.append(pager);
-                list.append(groupsWrap);
+
+                const filteredGroups = [...new Set(filtered.filter((p) => p.group).map((p) => p.group))];
+                if (filteredGroups.length) {
+                    const groupsWrap = $('<div class="aqs-list-section aqs-list-groups"></div>');
+                    const raw = settings.pages.list.__groups__ || 0;
+                    const cur = clampPage(raw, filteredGroups.length);
+                    if (raw !== cur) {
+                        settings.pages.list.__groups__ = cur;
+                        save();
+                    } else {
+                        settings.pages.list.__groups__ = cur;
+                    }
+                    const sliced = slicePage(filteredGroups, cur);
+                    for (const g of sliced.items) {
+                        groupsWrap.append(makeGroupBox(g));
+                    }
+                    const pager = makePager(sliced.page, sliced.total, (np) => {
+                        settings.pages.list.__groups__ = np;
+                        save();
+                        renderListContent();
+                    });
+                    if (pager && pager.length) groupsWrap.append(pager);
+                    list.append(groupsWrap);
+                }
             }
         }
 
@@ -1532,12 +1597,17 @@
         /* ---------------- 快捷面板 / 插头嵌入 ---------------- */
         function buildProfileItems($root, { pageKey } = {}) {
             $root.empty();
-            if (!settings.profiles.length) {
-                $root.append($('<div class="aqs-empty">先去扩展设置里添加站点</div>'));
+            const filtered = settings.profiles.filter(matchSearch);
+            if (!filtered.length) {
+                if (searchQuery) {
+                    $root.append($('<div class="aqs-empty">没有匹配「' + $('<span>').text(searchQuery).html() + '」的站点</div>'));
+                } else {
+                    $root.append($('<div class="aqs-empty">先去扩展设置里添加站点</div>'));
+                }
                 return;
             }
 
-            const flat = orderedProfiles();
+            const flat = orderedProfiles().filter(matchSearch);
             const key = pageKey || 'embed';
             const raw = settings.pages[key] || 0;
             const cur = clampPage(raw, flat.length);
@@ -1818,14 +1888,80 @@
             });
             $title.append($close);
             panel.prepend($title);
+
+            // 快捷面板搜索栏
+            const $qpSearch = $('<div class="aqs-qp-search"></div>');
+            const $qpSearchInput = $('<input class="text_pole aqs-search-input" type="text" placeholder="搜索站点…" autocomplete="off">').val(searchQuery);
+            const $qpSearchClear = $('<div class="menu_button menu_button_icon aqs-btn aqs-search-clear" title="清除搜索"><i class="fa-solid fa-xmark"></i></div>')
+                .toggle(!!searchQuery);
+            $qpSearch.append($qpSearchInput, $qpSearchClear);
+            // 拦截所有事件，防止冒泡到魔法棒菜单
+            $qpSearch.on('pointerdown mousedown touchstart pointerup mouseup click touchend', (e) => {
+                e.stopPropagation();
+            });
+            $qpSearchInput.on('input.aqs', function () {
+                searchQuery = String(this.value || '').trim();
+                $qpSearchClear.toggle(!!searchQuery);
+                // 同步设置面板搜索框
+                $('#aqs_search').val(searchQuery);
+                $('#aqs_search_clear').toggle(!!searchQuery);
+                renderQuickPanel();
+                const anchor = document.getElementById('aqs_wand_btn');
+                requestAnimationFrame(() => layoutQuickPanel(anchor));
+            });
+            $qpSearchClear.on('click.aqs', (e) => {
+                e.stopPropagation();
+                searchQuery = '';
+                $('#aqs_search').val('');
+                $('#aqs_search_clear').hide();
+                renderQuickPanel();
+                const anchor = document.getElementById('aqs_wand_btn');
+                requestAnimationFrame(() => layoutQuickPanel(anchor));
+            });
+            // 插在 title 之后、站点列表之前
+            $title.after($qpSearch);
         }
 
         function renderApiEmbed() {
             const body = $('#aqs_api_embed_body');
             if (!body.length) return;
             buildProfileItems(body, { pageKey: 'embed' });
-            const n = settings.profiles.length;
-            $('#aqs_api_embed_count').text(n ? (n + ' 站') : '空');
+            const n = settings.profiles.filter(matchSearch).length;
+            const total = settings.profiles.length;
+            if (searchQuery) {
+                $('#aqs_api_embed_count').text(n + '/' + total + ' 站');
+            } else {
+                $('#aqs_api_embed_count').text(total ? (total + ' 站') : '空');
+            }
+            // 插头嵌入区搜索栏
+            const embedSearchId = 'aqs_embed_search';
+            if (!$('#' + embedSearchId).length) {
+                const $searchBar = $('<div id="' + embedSearchId + '" class="aqs-search-bar"></div>');
+                const $searchInput = $('<input class="text_pole aqs-search-input" type="text" placeholder="搜索站点…" autocomplete="off">').val(searchQuery);
+                const $searchClear = $('<div class="menu_button menu_button_icon aqs-btn aqs-search-clear" title="清除搜索"><i class="fa-solid fa-xmark"></i></div>')
+                    .toggle(!!searchQuery);
+                $searchBar.append($searchInput, $searchClear);
+                $searchInput.on('input.aqs', function () {
+                    searchQuery = String(this.value || '').trim();
+                    $searchClear.toggle(!!searchQuery);
+                    // 同步设置面板搜索框
+                    $('#aqs_search').val(searchQuery);
+                    $('#aqs_search_clear').toggle(!!searchQuery);
+                    renderApiEmbed();
+                });
+                $searchClear.on('click.aqs', () => {
+                    searchQuery = '';
+                    $('#' + embedSearchId + ' .aqs-search-input').val('');
+                    $searchClear.hide();
+                    $('#aqs_search').val('');
+                    $('#aqs_search_clear').hide();
+                    renderApiEmbed();
+                });
+                body.before($searchBar);
+            } else {
+                $('#' + embedSearchId + ' .aqs-search-input').val(searchQuery);
+                $('#' + embedSearchId + ' .aqs-search-clear').toggle(!!searchQuery);
+            }
         }
 
         function ensureApiEmbed() {

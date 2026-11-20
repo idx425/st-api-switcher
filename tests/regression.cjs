@@ -72,6 +72,11 @@ async function setup(page) {
                 state.secrets.push({ id, value: body.value, label: body.label, active: true });
                 return json({ id });
             }
+            if (url.endsWith('/secrets/rotate')) {
+                if (!state.secrets.some(item => item.id === body.id)) return json({ error: true }, 404);
+                for (const item of state.secrets) item.active = item.id === body.id;
+                return json({ ok: true });
+            }
             if (url.endsWith('/secrets/delete')) {
                 assertSpecific(body.id);
                 state.secrets = state.secrets.filter(item => item.id !== body.id);
@@ -83,6 +88,7 @@ async function setup(page) {
                     state.releaseLookup = resolve;
                     options.signal.addEventListener('abort', () => { state.aborted = true; reject(options.signal.reason); }, { once: true });
                 });
+                if (state.nativeModels?.[body.custom_url]) return json({ data: state.nativeModels[body.custom_url].map(id => ({ id })) });
                 if (state.denyLookup) return json({ error: true, message: '请在 TT 信任此端点', data: { data: [] } });
                 return json({ data: { data: Array.from({ length: 28 }, (_, id) => ({ id: 'fixture-model-' + String(id).padStart(2, '0') })) } });
             }
@@ -258,11 +264,40 @@ const scenarios = {
         await page.evaluate(() => testState.completeNativeWrite());
         await wait(page, () => testState.profiles.find(p => p.name === 'Alpha').key === 'fixture-key-1');
         await page.evaluate(() => { testState.holdNativeWrite = false; });
+        await page.evaluate(() => { testState.nativeModels = { 'https://blank.invalid/v1': ['new-model'] }; });
         await page.locator('#custom_api_url_text').fill('https://blank.invalid/v1');
-        await page.locator('#custom_model_id').fill('');
+        await page.locator('#custom_model_id').fill('model-a');
+        await key.fill('fixture-new-domain');
         await activate(page.locator('#api_button_openai'));
-        await wait(page, () => testState.profiles.find(p => p.name === 'blank.invalid')?.needsKey === true);
-        assert.equal(await page.evaluate(() => testState.profiles.find(p => p.name === 'blank.invalid').key), '');
+        await page.getByText(/本站没有所填模型/).waitFor(timeout);
+        assert.deepEqual(await page.evaluate(() => {
+            const p = testState.profiles.find(p => p.name === 'blank.invalid');
+            return [p.key, p.models, p.model];
+        }), ['fixture-new-domain', [], '']);
+        await switchAndWait(page, 'Beta', 4);
+        await switchAndWait(page, 'blank.invalid', 5);
+        assert.equal(await page.evaluate(() => testState.connects.at(-1).key), 'fixture-new-domain');
+        await page.locator('#custom_api_url_text').fill('https://bound.invalid/v1');
+        await page.locator('#custom_model_id').fill('bound-model');
+        await page.evaluate(() => {
+            testState.nativeModels['https://bound.invalid/v1'] = ['bound-model'];
+            for (const entry of testState.secrets) entry.active = entry.id === 'native';
+        });
+        await activate(page.locator('#api_button_openai'));
+        await wait(page, () => testState.profiles.find(p => p.name === 'bound.invalid')?.needsKey === true);
+        assert.equal(await page.evaluate(() => testState.lookup.some(x => x.custom_url === 'https://bound.invalid/v1')), false);
+        const confirm = page.waitForEvent('dialog').then(dialog => dialog.accept());
+        await activate(page.locator('#aqs_bind_native_key'));
+        await confirm;
+        await wait(page, () => testState.profiles.find(p => p.name === 'bound.invalid')?.model === 'bound-model');
+        const bound = await page.evaluate(() => testState.profiles.find(p => p.name === 'bound.invalid'));
+        assert.equal(bound.nativeKeyId, 'native');
+        assert.equal(bound.key, '');
+        await page.locator('#aqs_embed_search input').fill('Beta');
+        await switchAndWait(page, 'Beta', 7);
+        await page.locator('#aqs_embed_search input').fill('bound.invalid');
+        await switchAndWait(page, 'bound.invalid', 8);
+        assert.equal(await page.evaluate(() => testState.connects.at(-1).key), 'native-test');
         await page.locator('#aqs_auto_sync_native').uncheck();
         await page.locator('#custom_api_url_text').fill('https://disabled.invalid/v1');
         await key.fill('fixture-key-disabled');
@@ -285,6 +320,21 @@ const scenarios = {
         assert.equal(await page.locator('#aqs_key').getAttribute('type'), 'password');
         assert.equal(await page.evaluate(() => testState.profiles.find(p => p.url === 'https://new.invalid/v1').name), 'new.invalid');
     },
+    async groupScroll(page) {
+        const group = page.locator('#aqs_profile_list .aqs-group-head').first();
+        const before = await group.evaluate(head => {
+            const scroller = document.querySelector('#extensions_settings2');
+            scroller.style.cssText = 'height:250px;overflow:auto';
+            scroller.scrollTop = head.offsetTop - scroller.offsetTop - 35;
+            return scroller.scrollTop;
+        });
+        assert.ok(before > 0);
+        await activate(group);
+        assert.equal(await group.getAttribute('aria-expanded'), 'false');
+        await activate(group);
+        assert.equal(await group.getAttribute('aria-expanded'), 'true');
+        assert.equal(await page.locator('#extensions_settings2').evaluate(el => el.scrollTop), before);
+    },
     async locateAndTheme(page, size) {
         await switchAndWait(page, 'Alpha', 1);
         const bar = page.locator('#aqs_embed_search input');
@@ -301,14 +351,20 @@ const scenarios = {
         await bounds(page, '#aqs_quick_panel', size.width, size.height);
         for (const value of ['rgba(97, 78, 64, 0.75)', 'rgb(245, 232, 222)', 'rgb(0, 0, 0)']) {
             await page.evaluate(tint => document.documentElement.style.setProperty('--SmartThemeBlurTintColor', tint), value);
-            const appearance = await page.locator('#aqs_quick_panel').evaluate(el => ({ bg: getComputedStyle(el).backgroundColor, image: getComputedStyle(el).backgroundImage }));
-            assert.deepEqual(appearance, { bg: value, image: 'none' });
+            const appearance = await page.locator('#aqs_quick_panel').evaluate(el => {
+                const style = getComputedStyle(el);
+                const canvas = document.createElement('canvas').getContext('2d');
+                canvas.fillStyle = style.backgroundColor;
+                canvas.fillRect(0, 0, 1, 1);
+                return { rgba: [...canvas.getImageData(0, 0, 1, 1).data], image: style.backgroundImage, blur: style.backdropFilter };
+            });
+            assert.deepEqual(appearance, { rgba: [...value.match(/\d+/g).slice(0, 3).map(Number), 255], image: 'none', blur: 'none' });
         }
     },
 };
 
 async function main() {
-    const rounds = Number(process.env.AQS_ROUNDS || 162);
+    const rounds = Number(process.env.AQS_ROUNDS || 180);
     const selected = process.env.AQS_SCENARIO;
     const browser = await chromium.launch({ args: ['--no-sandbox', '--disable-dev-shm-usage'] });
     const devices = [

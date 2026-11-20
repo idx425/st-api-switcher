@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '4.0.1';
+    const VERSION = '4.1.0';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -82,6 +82,7 @@
                     group: typeof p.group === 'string' ? p.group.trim() : '',
                     favorite: p.favorite === true,
                     needsKey: p.needsKey === true,
+                    nativeKeyId: typeof p.nativeKeyId === 'string' ? p.nativeKeyId : '',
                 };
             });
         const dirty = rawProfiles.length !== cleanProfiles.length || rawProfiles.some((p, i) => {
@@ -238,10 +239,11 @@
                 return false;
             }
             applyBusy = true;
+            invalidateNativeSync();
             try {
                 const url = normUrl(p.url);
                 const key = String(p.key || '');
-                if (p.needsKey && !key) throw new Error('此站点缺少 API Key，请在扩展设置中编辑并补填');
+                if (p.needsKey && !key && !p.nativeKeyId) throw new Error('此站点缺少 API Key，请在扩展设置中编辑并补填');
                 if (!validApiUrl(url)) throw new Error('请填写有效的 HTTP(S) API 基础地址');
 
                 const controls = '#main_api, #chat_completion_source, #custom_api_url_text, #custom_model_id, #api_key_custom, #api_button_openai';
@@ -257,7 +259,12 @@
                     if (source.length) setSelectValueIfNeeded('#chat_completion_source', 'custom');
                     await waitForElement('#custom_api_url_text');
                     if (!ready(getControls())) throw new Error('自定义连接面板尚未就绪，请打开 API 连接抽屉重试');
-                    await writeKey(key);
+                    if (!key && p.nativeKeyId) {
+                        const entries = await readCustomSecrets();
+                        const bound = entries.find(item => item.id === p.nativeKeyId);
+                        if (!bound) throw new Error('已绑定的 TT 密钥不存在，请重新绑定或编辑站点填写 Key');
+                        if (!bound.active) await secretRequest('rotate', { id: bound.id });
+                    } else await writeKey(key);
                     const fields = getControls();
                     if (!ready(fields)) throw new Error('切换期间连接面板发生变化，请重试');
                     $(fields.custom_api_url_text).val(url).trigger('input').trigger('change');
@@ -531,14 +538,14 @@
             return s;
         }
 
-        async function fetchModelList(url, key, signal) {
+        async function fetchModelList(url, key, signal, { nativeKeyId, exact = false } = {}) {
             if (!validApiUrl(url)) throw new Error('请填写有效的 HTTP(S) API 基础地址');
             const useKey = String(key || '').trim();
-            if (TT && !useKey && (await readCustomSecrets()).length) {
+            if (TT && !useKey && !nativeKeyId && (await readCustomSecrets()).length) {
                 throw new Error('酒馆保存了自定义密钥。请填写此站点自己的 Key，避免获取模型时使用其他站点的密钥。');
             }
             let lastError;
-            for (const base of candidateUrls(url)) {
+            for (const base of exact ? [url] : candidateUrls(url)) {
                 if (signal?.aborted) throw signal.reason;
                 try {
                     // TT 保持桌面/移动端的端点信任检查，通过请求头指定当前站点的 Key。
@@ -549,6 +556,7 @@
                         headers: ctx.getRequestHeaders(),
                         body: JSON.stringify({
                             chat_completion_source: 'custom', custom_url: base, custom_api_format: 'openai_compat',
+                            ...(nativeKeyId ? { secret_id: nativeKeyId } : {}),
                             ...(authorization ? { custom_include_headers: { Authorization: authorization } } : {}),
                         }),
                     } : {
@@ -591,7 +599,7 @@
 
         let closeModelPicker;
 
-        function openModelPicker(url, key, onPick) {
+        function openModelPicker(url, key, onPick, nativeKeyId) {
             url = normUrl(url);
             if (!validApiUrl(url)) { toastr.warning('请填写有效的 HTTP(S) API 基础地址'); return; }
 
@@ -680,7 +688,7 @@
             };
 
             const doFetch = () => {
-                fetchModelList(url, key, request.signal)
+                fetchModelList(url, key, request.signal, { nativeKeyId })
                     .then((models) => {
                         if (isClosed) return;
                         const render = (filter) => {
@@ -845,7 +853,7 @@
             const meta = $('<div class="aqs-card-meta"></div>');
             if (models.length) $('<span class="aqs-chip aqs-chip-model"></span>').text(modelSummary(models)).attr('title', models.join('\n')).appendTo(meta);
             if (models.length > 1) $('<span class="aqs-chip aqs-chip-dim"></span>').text(models.length + ' 个模型').appendTo(meta);
-            $('<span class="aqs-chip aqs-chip-dim"></span>').text(p.key ? '已保存密钥' : p.needsKey ? '待补密钥' : '无密钥').appendTo(meta);
+            $('<span class="aqs-chip aqs-chip-dim"></span>').text(p.key ? '已保存密钥' : p.nativeKeyId ? '已绑定 TT 密钥' : p.needsKey ? '待补密钥' : '无密钥').appendTo(meta);
             card.append(meta);
 
             if (models.length > 1 && !folded) {
@@ -883,7 +891,7 @@
                     save();
                     renderAll();
                     toastr.success('已为「' + p.name + '」设置默认模型：' + m);
-                })).appendTo(btns);
+                }, p.nativeKeyId)).appendTo(btns);
             $('<button class="menu_button aqs-btn" title="编辑"><i class="fa-solid fa-pen"></i></button>')
                 .on('click', () => startEdit(p)).appendTo(btns);
             $('<button class="menu_button aqs-btn aqs-danger" title="删除"><i class="fa-solid fa-trash"></i></button>')
@@ -999,14 +1007,29 @@
             $('<span class="aqs-group-name"></span>').text(g).appendTo(head);
             if (items.some(isActive)) $('<span class="aqs-group-live" title="当前连接在此分组"></span>').appendTo(head);
             $('<span class="aqs-group-count"></span>').text(items.length).appendTo(head);
+            let collapsedAt;
             if (!searchQuery) head.on('click', () => {
+                const collapsed = box.hasClass('aqs-collapsed');
                 settings.groupCollapsed[g] = !collapsed;
                 save();
-                renderList();
+                const scrollers = [];
+                for (let el = head[0].parentElement; el; el = el.parentElement) {
+                    if (el.scrollTop || /auto|scroll/.test(getComputedStyle(el).overflowY)) scrollers.push([el, el.scrollTop]);
+                }
+                box.toggleClass('aqs-collapsed', !collapsed);
+                head.attr('aria-expanded', String(collapsed));
+                body.toggle(collapsed);
+                if (collapsed && !body.children().length) appendPagedCards(body, items, groupPageKey(g), renderList);
+                for (const [el, top] of scrollers) {
+                    const previous = collapsedAt?.get(el);
+                    el.scrollTop = collapsed && previous?.clamped === top ? previous.top : top;
+                }
+                collapsedAt = collapsed ? undefined : new Map(scrollers.map(([el, top]) => [el, { top, clamped: el.scrollTop }]));
             });
             box.append(head);
             const body = $('<div class="aqs-group-body"></div>');
             // 组内站点仍按 4 条分页，避免展开后一长串
+            body.toggle(!collapsed);
             if (!collapsed) appendPagedCards(body, items, groupPageKey(g), renderList);
             box.append(body);
             return box;
@@ -1138,8 +1161,9 @@
             let saved;
             const edits = { name, url, key, model, models, group };
             const update = (profile) => {
-                const needsKey = Boolean(profile.needsKey && !key && normUrl(profile.url) === url);
-                return Object.assign(profile, edits, { needsKey });
+                const needsKey = Boolean(!key && (profile.needsKey || profile.nativeKeyId) && normUrl(profile.url) === url);
+                const nativeKeyId = !key && normUrl(profile.url) === url ? profile.nativeKeyId : '';
+                return Object.assign(profile, edits, { needsKey, nativeKeyId });
             };
 
             if (editingId) {
@@ -1171,7 +1195,10 @@
         function exportProfiles(includeKeys = false) {
             if (!settings.profiles.length) { toastr.warning('没有可导出的站点'); return; }
             if (includeKeys && !confirm('完整备份包含明文 API Key。确认导出？')) return;
-            const profiles = settings.profiles.map(({ key, ...profile }) => includeKeys ? { ...profile, key } : { ...profile, needsKey: Boolean(key || profile.needsKey) });
+            const profiles = settings.profiles.map(({ key, nativeKeyId, ...profile }) => {
+                const needsKey = Boolean(nativeKeyId || profile.needsKey || (!includeKeys && key));
+                return includeKeys ? { ...profile, key, needsKey } : { ...profile, needsKey };
+            });
             const data = JSON.stringify({ app: EXT_NAME, version: VERSION, includesKeys: includeKeys, profiles }, null, 2);
             const blob = new Blob([data], { type: 'application/json' });
             const a = document.createElement('a');
@@ -1206,9 +1233,11 @@
                         if (typeof item.favorite === 'boolean') clean.favorite = item.favorite;
                         if (typeof item.key === 'string') {
                             clean.key = item.key;
+                            if (item.key || !dup || normUrl(dup.url) !== clean.url) clean.nativeKeyId = '';
                             clean.needsKey = !item.key && item.needsKey === true;
                         } else if (!dup || normUrl(dup.url) !== clean.url) {
                             clean.key = '';
+                            clean.nativeKeyId = '';
                             clean.needsKey = item.needsKey === true;
                         }
                         if (dup) { Object.assign(dup, clean); updated++; }
@@ -1773,36 +1802,78 @@
             $('#aqs_sync_feedback').text(message);
         }
 
-        function upsertNativeProfile(snap, needsKey) {
-            if (!settings.autoSyncNative || applyBusy || currentUrl() !== snap.url || currentModel() !== snap.model) return;
+        let syncSerial = 0;
+        let syncAbort;
+        function invalidateNativeSync() {
+            syncSerial++;
+            syncAbort?.abort();
+        }
+
+        async function syncNativeProfile(snap, serial, { bindId, explicit = false } = {}) {
+            const current = () => syncSerial === serial && (explicit || settings.autoSyncNative) && !applyBusy && currentUrl() === snap.url;
+            if (!current()) return;
             const matches = settings.profiles.filter(p => normUrl(p.url) === snap.url);
-            const sameKey = snap.key && matches.find(p => p.key === snap.key);
-            const hit = sameKey || (matches.length === 1 ? matches[0] : null);
+            const exact = matches.find(p => (snap.key && p.key === snap.key) || (bindId && p.nativeKeyId === bindId));
+            const hit = exact || (matches.length === 1 ? matches[0] : null);
             if (!hit && matches.length > 1) {
-                describeNativeSync('同一地址有多个站点。请在扩展中手动选择要更新的站点。');
-                toastr.info('同一地址有多个站点，未自动覆盖', 'API 快切');
+                describeNativeSync('同一地址有多个站点，未覆盖。请在扩展中手动编辑。');
                 return;
             }
-            if (hit) {
-                const models = splitModelValues(profileModels(hit), snap.model);
-                if (snap.key) { hit.key = snap.key; hit.needsKey = false; }
-                // 保留该站点原来的默认模型，将原生面板的新模型加入列表。
-                hit.model = models[0] || '';
-                hit.models = models;
-                activeProfileId = hit.id;
-            } else {
-                const name = uniqueProfileName(profileNameFromUrl(snap.url));
-                const id = uid();
-                settings.profiles.push({ id, name, ...snap, models: splitModelValues(snap.model), group: '', needsKey });
-                activeProfileId = id;
+            let entries;
+            if (!snap.key && !bindId) {
+                try { entries = await readCustomSecrets(); } catch { /* unknown: do not guess */ }
             }
+            if (!current()) return;
+            const nativeKeyId = bindId || (!snap.key ? hit?.nativeKeyId : '') || '';
+            const key = bindId ? '' : snap.key || hit?.key || '';
+            const needsKey = !key && !nativeKeyId && (hit?.needsKey || !entries || entries.some(item => item.active));
+            const profile = hit || { id: uid(), url: snap.url, name: uniqueProfileName(profileNameFromUrl(snap.url)), group: '', model: '', models: [] };
+            Object.assign(profile, { key, nativeKeyId, needsKey: Boolean(needsKey) });
+            if (!hit) settings.profiles.push(profile);
+            activeProfileId = profile.id;
             save();
             renderAll();
-            const name = currentProfile()?.name || profileNameFromUrl(snap.url);
-            const message = !hit && needsKey ? '已同步「' + name + '」的地址和模型；请在快切中补填密钥。'
-                : '已同步「' + name + '」的连接配置。';
+            // Save credentials separately; failing to enumerate models must not lose a confirmed key.
+            let suffix = snap.model ? '未验证模型，未自动添加。' : '未选择模型。';
+            if (snap.model && !needsKey) {
+                const controller = syncAbort = new AbortController();
+                describeNativeSync('已保存配置，正在核对本站模型…');
+                try {
+                    const available = await fetchModelList(snap.url, key, controller.signal, { nativeKeyId, exact: true });
+                    if (!current() || !settings.profiles.includes(profile) || normUrl(profile.url) !== snap.url) return;
+                    if (available.includes(snap.model)) {
+                        const models = splitModelValues(profileModels(profile), [snap.model]);
+                        profile.model = models[0] || '';
+                        profile.models = models;
+                        save();
+                        renderAll();
+                        suffix = '模型已核对。';
+                    } else suffix = '本站没有所填模型，未自动添加。';
+                } catch {
+                    if (!current()) return;
+                    suffix = '未能核对本站模型；可在站点卡片手动获取或填写。';
+                }
+            }
+            const credential = key || nativeKeyId ? '密钥已关联。' : needsKey ? '请绑定原生密钥或在快切中补填。' : '';
+            const message = '已同步「' + profile.name + '」。' + credential + suffix;
             describeNativeSync(message);
             toastr.info(message, 'API 快切');
+        }
+
+        async function bindCurrentNativeKey() {
+            if (!TT || applyBusy) return;
+            const snap = captureNativeApiSnapshot();
+            if (!snap || snap.key) { toastr.warning('请先在 TT 原生面板保存或选中密钥，再绑定到快切'); return; }
+            try {
+                const active = (await readCustomSecrets()).find(entry => entry.active);
+                if (!active?.id || isPluginSecret(active)) {
+                    toastr.warning('请先在原生密钥列表选中该站点自己的已保存密钥');
+                    return;
+                }
+                if (currentUrl() !== snap.url || !confirm('确认把 TT 当前选中的密钥绑定到此地址？\n' + snap.url)) return;
+                invalidateNativeSync();
+                await syncNativeProfile(snap, syncSerial, { bindId: active.id, explicit: true });
+            } catch { toastr.warning('无法读取 TT 密钥状态，未执行绑定'); }
         }
 
         function bindNativeSync() {
@@ -1811,38 +1882,32 @@
             let pending = null;
             let expiry;
             const clear = () => { clearTimeout(expiry); pending = null; };
+            const run = (snap, serial) => syncNativeProfile(snap, serial).catch(() => describeNativeSync('未能同步这次连接，请重试。'));
             if (observesWrites) ctx.eventSource.on(SECRET_WRITTEN, (key) => {
                 if (key !== SECRET_KEY_CUSTOM || !pending) return;
-                const snap = pending;
+                const { snap, serial } = pending;
                 clear();
-                upsertNativeProfile(snap, false);
+                void run(snap, serial);
             });
             document.addEventListener('click', (event) => {
                 if (!event.target.closest?.('#api_button_openai') || applyBusy || !settings.autoSyncNative) return;
                 const snap = captureNativeApiSnapshot();
                 clear();
+                invalidateNativeSync();
+                const serial = syncSerial;
                 if (!snap) return;
                 if (snap.key && observesWrites) {
-                    pending = snap;
+                    pending = { snap, serial };
                     describeNativeSync('等待酒馆保存新密钥…');
                     expiry = setTimeout(() => {
                         clear();
-                        describeNativeSync('未收到酒馆保存密钥的确认，没有同步这次修改。');
+                        if (serial === syncSerial) describeNativeSync('未收到密钥保存确认。若密钥已存在，请使用「绑定 TT 当前密钥」。');
                     }, 10000);
-                } else {
-                    queueMicrotask(async () => {
-                        let needsKey = false;
-                        if (!snap.key) {
-                            try { needsKey = (await readCustomSecrets()).some(item => item.active); }
-                            catch { needsKey = true; }
-                        }
-                        upsertNativeProfile(snap, needsKey);
-                    });
-                }
+                } else queueMicrotask(() => run(snap, serial));
             }, true);
-            const invalidate = () => { if (pending) clear(); };
+            const invalidate = () => { clear(); invalidateNativeSync(); };
             ctx.eventSource?.on?.(ctx.eventTypes?.CHATCOMPLETION_SOURCE_CHANGED || 'chatcompletion_source_changed', invalidate);
-            $(document).on('input.aqsSync', '#custom_api_url_text, #custom_model_id', invalidate);
+            $(document).on('input.aqsSync', '#custom_api_url_text', invalidate);
             $(document).on('input.aqsSync', '#api_key_custom', function () { if (this.value) invalidate(); });
         }
 
@@ -1943,6 +2008,7 @@
                     <input id="aqs_auto_sync_native" type="checkbox">
                     <span>点酒馆的「连接」时自动同步自定义站点</span>
                   </label>
+                  <button type="button" id="aqs_bind_native_key" class="aqs-btn" hidden>绑定 TT 当前密钥</button>
                   <span id="aqs_sync_feedback" class="aqs-note" role="status"></span>
                   <div class="aqs-io-btns">
                     <button type="button" id="aqs_export" class="menu_button aqs-btn">导出配置</button>
@@ -1978,6 +2044,7 @@
         let settingsPanel;
 
         function bindSettingsUi() {
+            $('#aqs_bind_native_key').prop('hidden', !TT).on('click.aqs', bindCurrentNativeKey);
             $('#aqs_save').on('click.aqs', () => onSave(false));
             $('#aqs_save_use').on('click.aqs', () => onSave(true));
             $('#aqs_url').on('input.aqs', () => $('#aqs_form_hint').text(''));
@@ -2008,16 +2075,19 @@
                 this.value = '';
             });
             $('#aqs_fetch_models').off('click.aqs').on('click.aqs', () => {
-                openModelPicker(formUrl(), $('#aqs_key').val(), (m) => {
+                const url = formUrl();
+                const editing = settings.profiles.find(p => p.id === editingId && normUrl(p.url) === url);
+                openModelPicker(url, $('#aqs_key').val(), (m) => {
                     const list = appendModelToInput('#aqs_model', m);
                     toastr.success('已加入：' + m + (list.length > 1 ? '（共 ' + list.length + ' 个模型）' : ''), 'API 快切');
-                });
+                }, $('#aqs_key').val() ? undefined : editing?.nativeKeyId);
             });
             $('#aqs_auto_sync_native')
                 .prop('checked', !!settings.autoSyncNative)
                 .off('change.aqs')
                 .on('change.aqs', function () {
                     settings.autoSyncNative = !!this.checked;
+                    invalidateNativeSync();
                     describeNativeSync(this.checked ? '' : '已关闭自动同步。');
                     save();
                 });

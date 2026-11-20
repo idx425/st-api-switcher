@@ -184,14 +184,15 @@
 @media (pointer: coarse) { .aqs-settings .aqs-favorite { min-width: 44px; } }
 
 
-/* The wand floats above the chat, so use the host menu’s exact tint + blur.
-   The in-drawer version keeps its existing translucent treatment. */
+/* Keep the theme tint, but draw the floating menu on a solid surface. */
 #aqs_quick_panel {
-    background: var(--SmartThemeBlurTintColor, Canvas);
+    background: Canvas;
+    background: rgb(from var(--SmartThemeBlurTintColor, Canvas) r g b / 1);
     color: var(--SmartThemeBodyColor, CanvasText);
     border-color: var(--SmartThemeBorderColor, var(--aqs-border));
-    backdrop-filter: blur(max(8px, var(--SmartThemeBlurStrength, 0px)));
-    -webkit-backdrop-filter: blur(max(8px, var(--SmartThemeBlurStrength, 0px)));
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    filter: none;
     font-family: var(--aqs-menu-font, inherit);
     border-radius: 16px;
     padding: 12px;
@@ -247,3 +248,5 @@
 
 .aqs-settings button.aqs-group-head { width: 100%; text-align: start; border-color: transparent; }
 .aqs-settings div.aqs-group-head { cursor: default; }
+
+#aqs_bind_native_key:not([hidden]) { margin-block-start: 8px; }

@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '4.1.0';
+    const VERSION = '4.1.1';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -194,11 +194,13 @@
             if (entries == null || entries === false) return [];
             if (entries === true) return [{ active: true }];
             if (!Array.isArray(entries)) throw new Error('酒馆返回了无效的自定义密钥列表');
-            return entries;
+            return entries.filter(entry => entry && typeof entry === 'object')
+                .map(({ id, label, active }) => ({ id, label, active }));
         }
 
         function isPluginSecret(item) {
-            return Boolean(item?.id && (settings.secretIds.includes(String(item.id)) || item.label === SECRET_LABEL));
+            // A label is user editable; only IDs recorded by this extension belong to its temporary slots.
+            return Boolean(item?.id && settings.secretIds.includes(String(item.id)));
         }
 
         async function writeKey(value) {
@@ -263,7 +265,11 @@
                         const entries = await readCustomSecrets();
                         const bound = entries.find(item => item.id === p.nativeKeyId);
                         if (!bound) throw new Error('已绑定的 TT 密钥不存在，请重新绑定或编辑站点填写 Key');
-                        if (!bound.active) await secretRequest('rotate', { id: bound.id });
+                        if (!bound.active) {
+                            await secretRequest('rotate', { id: bound.id });
+                            const confirmed = (await readCustomSecrets()).some(item => item.id === bound.id && item.active);
+                            if (!confirmed) throw new Error('TT 未启用该站点绑定的密钥，已停止切换');
+                        }
                     } else await writeKey(key);
                     const fields = getControls();
                     if (!ready(fields)) throw new Error('切换期间连接面板发生变化，请重试');
@@ -1380,23 +1386,11 @@
             const gap = 8;
 
             // 清掉 CSS 默认 bottom/left/animation/transform，避免和 top 打架、被菜单半透明层盖住
-            const font = el.style.getPropertyValue('--aqs-menu-font');
-            el.style.cssText = [
-                'display:block',
-                'position:fixed',
-                'z-index:2147483646',
-                'visibility:visible',
-                'opacity:1',
-                'pointer-events:auto',
-                'box-sizing:border-box',
-                'transform:none',
-                'animation:none',
-                'margin:0',
-                'isolation:isolate',
-                'bottom:auto',
-                'right:auto',
-            ].map((s) => s + ' !important').join(';') + ';';
-            if (font) el.style.setProperty('--aqs-menu-font', font);
+            for (const [property, value] of Object.entries({
+                display: 'block', position: 'fixed', 'z-index': '2147483646', visibility: 'visible',
+                opacity: '1', 'pointer-events': 'auto', 'box-sizing': 'border-box', transform: 'none',
+                animation: 'none', margin: '0', isolation: 'isolate', bottom: 'auto', right: 'auto',
+            })) el.style.setProperty(property, value, 'important');
 
             const maxW = Math.max(1, Math.min(isPhone ? 360 : (isTablet ? 400 : 420), vw - pad * 2));
             const minW = Math.min(260, maxW);
@@ -1497,6 +1491,62 @@
             el.setAttribute('data-aqs-qp-layout', vw + 'x' + vh + '@' + Math.round(top) + ',' + Math.round(left));
         }
 
+        let wandThemeObserver;
+
+        function refreshWandTheme(panel, anchor) {
+            const drawer = document.getElementById('rm_api_block');
+            const embed = document.getElementById('aqs_api_embed');
+            // Unlike the portal, these nodes inherit scoped TT themes (including body/drawer variables).
+            const source = embed || drawer || anchor?.parentElement || document.body;
+            const style = getComputedStyle(source);
+            const accentToken = style.getPropertyValue('--SmartThemeQuoteColor');
+            const tintToken = style.getPropertyValue('--SmartThemeBlurTintColor');
+            const drawerBackground = drawer && getComputedStyle(drawer).backgroundColor;
+            const menuBackground = anchor?.parentElement && getComputedStyle(anchor.parentElement).backgroundColor;
+            const canvas = document.createElement('canvas');
+            canvas.width = canvas.height = 1;
+            const context = canvas.getContext('2d', { willReadFrequently: true });
+            if (!context) return;
+            const parse = (value, minimumAlpha = 1) => {
+                if (!value || !CSS.supports('color', value.trim())) return null;
+                context.clearRect(0, 0, 1, 1);
+                context.fillStyle = value;
+                context.fillRect(0, 0, 1, 1);
+                const [r, g, b, alpha] = context.getImageData(0, 0, 1, 1).data;
+                return alpha >= minimumAlpha ? [r, g, b] : null;
+            };
+            const rgb = (color) => 'rgb(' + color.join(', ') + ')';
+            const luminance = (color) => color.map(value => value / 255)
+                .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4)
+                .reduce((sum, value, i) => sum + value * [0.2126, 0.7152, 0.0722][i], 0);
+            const contrast = (a, b) => {
+                const x = luminance(a) + 0.05;
+                const y = luminance(b) + 0.05;
+                return Math.max(x / y, y / x);
+            };
+            const mix = (a, b, amount) => a.map((value, i) => Math.round(value * (1 - amount) + b[i] * amount));
+            const white = [255, 255, 255];
+            const black = [0, 0, 0];
+            const fg = parse(style.color, 64) || white;
+            const fallback = contrast(fg, black) >= contrast(fg, white) ? [23, 23, 23] : [247, 247, 247];
+            const tint = [drawerBackground, tintToken, menuBackground].map(value => parse(value, 24)).find(Boolean) || fallback;
+            const extreme = fallback[0] < 128 ? black : white;
+            let bg = tint;
+            for (let step = 1; step <= 10 && contrast(fg, bg) < 6; step++) bg = mix(tint, extreme, step / 10);
+            const text = contrast(fg, bg) >= 6 ? fg : (contrast(black, bg) >= contrast(white, bg) ? black : white);
+            const accent = parse(accentToken, 64);
+            const muted = mix(text, bg, 0.16);
+            const colors = {
+                '--aqs-text': text, '--aqs-bg': bg,
+                '--aqs-muted': contrast(muted, bg) >= 4.8 ? muted : text,
+                '--aqs-accent': accent && contrast(accent, bg) >= 3 ? accent : text,
+                '--aqs-border': mix(bg, text, 0.24), '--aqs-hover': mix(bg, text, 0.04),
+                '--aqs-selected': mix(bg, text, 0.06),
+            };
+            for (const [name, color] of Object.entries(colors)) panel.style.setProperty(name, rgb(color));
+            panel.style.setProperty('--aqs-menu-font', style.fontFamily);
+        }
+
         function openQuickPanel(anchorEl) {
             const panel = $('#aqs_quick_panel');
             if (!panel.length) return;
@@ -1504,12 +1554,15 @@
             if (panel[0].parentElement !== document.documentElement) {
                 document.documentElement.appendChild(panel[0]);
             }
-            // The float lives outside body to avoid the drawer's clipping. Keep the host font and menu surface.
-            const menu = anchorEl?.parentElement;
-            if (menu) {
-                const style = getComputedStyle(menu);
-                panel[0].style.setProperty('--aqs-menu-font', style.fontFamily);
+            const updateTheme = () => refreshWandTheme(panel[0], anchorEl);
+            updateTheme();
+            wandThemeObserver?.disconnect();
+            wandThemeObserver = new MutationObserver(updateTheme);
+            const sources = new Set();
+            for (const source of [document.getElementById('aqs_api_embed'), anchorEl?.parentElement]) {
+                for (let el = source; el; el = el.parentElement) sources.add(el);
             }
+            for (const el of sources) wandThemeObserver.observe(el, { attributes: true, attributeFilter: ['style', 'class'] });
             renderQuickPanel();
             panel.show();
             const relayout = () => {
@@ -1531,6 +1584,7 @@
         function closeQuickPanel() {
             const panel = $('#aqs_quick_panel');
             if (!panel.length || !panel.is(':visible')) return;
+            wandThemeObserver?.disconnect();
             panel[0].style.removeProperty('display');
             panel.hide();
         }
@@ -1841,7 +1895,8 @@
                 try {
                     const available = await fetchModelList(snap.url, key, controller.signal, { nativeKeyId, exact: true });
                     if (!current() || !settings.profiles.includes(profile) || normUrl(profile.url) !== snap.url) return;
-                    if (available.includes(snap.model)) {
+                    if (currentModel() !== snap.model) suffix = '核对期间模型已更换，未保存旧模型。';
+                    else if (available.includes(snap.model)) {
                         const models = splitModelValues(profileModels(profile), [snap.model]);
                         profile.model = models[0] || '';
                         profile.models = models;
@@ -1860,20 +1915,72 @@
             toastr.info(message, 'API 快切');
         }
 
-        async function bindCurrentNativeKey() {
+        let bindingTarget;
+        let bindingRevision = 0;
+        function closeNativeKeyPicker() {
+            bindingRevision++;
+            bindingTarget = undefined;
+            $('#aqs_native_key_picker').prop('hidden', true);
+            $('#aqs_native_key_select').empty();
+        }
+
+        async function showNativeKeyPicker() {
             if (!TT || applyBusy) return;
+            closeNativeKeyPicker();
+            const revision = bindingRevision;
             const snap = captureNativeApiSnapshot();
-            if (!snap || snap.key) { toastr.warning('请先在 TT 原生面板保存或选中密钥，再绑定到快切'); return; }
+            if (!snap) { describeNativeSync('请先在插头面板设置一个 OpenAI 兼容的自定义地址。'); return; }
+            if (snap.key) { describeNativeSync('原生面板还有未保存的 Key，请先点「连接」保存。'); return; }
+            let entries;
+            try { entries = await readCustomSecrets(); }
+            catch {
+                if (revision === bindingRevision) describeNativeSync('未能读取 TT 密钥列表，请稍后重试。');
+                return;
+            }
+            if (revision !== bindingRevision || applyBusy || currentUrl() !== snap.url) return;
+            // The short-lived API 快切 slot gets deleted on subsequent switches. Never bind to it.
+            const options = entries.filter(entry => typeof entry?.id === 'string' && entry.id && !isPluginSecret(entry));
+            if (!options.length) {
+                describeNativeSync(currentProfile()?.key ? '本站已保存快切密钥，切回时会自动使用，无需绑定。'
+                    : '没有可绑定的 TT 原生密钥。请在原生面板保存本站的密钥，或在站点卡片中填写。');
+                return;
+            }
+            bindingTarget = snap;
+            const select = $('#aqs_native_key_select').prop('disabled', false);
+            select.append($('<option>').val('').text('选择这个站点的密钥…'));
+            for (const [index, entry] of options.entries()) {
+                const label = String(entry.label || '').trim() || '密钥 ' + (index + 1);
+                select.append($('<option>').val(entry.id).text(label + (entry.active ? '（当前启用）' : '')));
+            }
+            $('#aqs_native_key_target').text(snap.url);
+            $('#aqs_native_key_apply').prop('disabled', true);
+            $('#aqs_native_key_picker').prop('hidden', false);
+            describeNativeSync('请核对地址，并选择属于该站点的密钥。');
+        }
+
+        async function applyNativeKeyBinding() {
+            const snap = bindingTarget;
+            const id = $('#aqs_native_key_select').val();
+            if (!snap || !id || applyBusy) return;
+            const revision = bindingRevision;
+            $('#aqs_native_key_apply, #aqs_native_key_select').prop('disabled', true);
             try {
-                const active = (await readCustomSecrets()).find(entry => entry.active);
-                if (!active?.id || isPluginSecret(active)) {
-                    toastr.warning('请先在原生密钥列表选中该站点自己的已保存密钥');
+                const entry = (await readCustomSecrets()).find(item => item.id === id && !isPluginSecret(item));
+                if (revision !== bindingRevision) return;
+                if (applyBusy || currentUrl() !== snap.url || !entry) {
+                    closeNativeKeyPicker();
+                    describeNativeSync('连接地址或密钥已变化，请重新打开绑定。');
                     return;
                 }
-                if (currentUrl() !== snap.url || !confirm('确认把 TT 当前选中的密钥绑定到此地址？\n' + snap.url)) return;
+                closeNativeKeyPicker();
                 invalidateNativeSync();
-                await syncNativeProfile(snap, syncSerial, { bindId: active.id, explicit: true });
-            } catch { toastr.warning('无法读取 TT 密钥状态，未执行绑定'); }
+                await syncNativeProfile(snap, syncSerial, { bindId: id, explicit: true });
+            } catch {
+                if (revision === bindingRevision || bindingTarget === undefined) {
+                    closeNativeKeyPicker();
+                    describeNativeSync('无法完成绑定，请重新读取 TT 密钥列表。');
+                }
+            }
         }
 
         function bindNativeSync() {
@@ -1901,11 +2008,11 @@
                     describeNativeSync('等待酒馆保存新密钥…');
                     expiry = setTimeout(() => {
                         clear();
-                        if (serial === syncSerial) describeNativeSync('未收到密钥保存确认。若密钥已存在，请使用「绑定 TT 当前密钥」。');
+                        if (serial === syncSerial) describeNativeSync('未收到密钥保存确认。若密钥已存在，请使用「绑定 TT 已保存密钥」。');
                     }, 10000);
                 } else queueMicrotask(() => run(snap, serial));
             }, true);
-            const invalidate = () => { clear(); invalidateNativeSync(); };
+            const invalidate = () => { clear(); invalidateNativeSync(); closeNativeKeyPicker(); };
             ctx.eventSource?.on?.(ctx.eventTypes?.CHATCOMPLETION_SOURCE_CHANGED || 'chatcompletion_source_changed', invalidate);
             $(document).on('input.aqsSync', '#custom_api_url_text', invalidate);
             $(document).on('input.aqsSync', '#api_key_custom', function () { if (this.value) invalidate(); });
@@ -2008,7 +2115,16 @@
                     <input id="aqs_auto_sync_native" type="checkbox">
                     <span>点酒馆的「连接」时自动同步自定义站点</span>
                   </label>
-                  <button type="button" id="aqs_bind_native_key" class="aqs-btn" hidden>绑定 TT 当前密钥</button>
+                  <button type="button" id="aqs_bind_native_key" class="aqs-btn" hidden>绑定 TT 已保存密钥</button>
+                  <div id="aqs_native_key_picker" hidden>
+                    <span class="aqs-note" id="aqs_native_key_target"></span>
+                    <label for="aqs_native_key_select">选择上方地址对应的 TT 密钥</label>
+                    <select id="aqs_native_key_select" class="text_pole"></select>
+                    <div class="aqs-form-btns">
+                      <button type="button" id="aqs_native_key_apply" class="aqs-btn aqs-btn-primary" disabled>确认绑定</button>
+                      <button type="button" id="aqs_native_key_cancel" class="aqs-btn">取消</button>
+                    </div>
+                  </div>
                   <span id="aqs_sync_feedback" class="aqs-note" role="status"></span>
                   <div class="aqs-io-btns">
                     <button type="button" id="aqs_export" class="menu_button aqs-btn">导出配置</button>
@@ -2044,7 +2160,10 @@
         let settingsPanel;
 
         function bindSettingsUi() {
-            $('#aqs_bind_native_key').prop('hidden', !TT).on('click.aqs', bindCurrentNativeKey);
+            $('#aqs_bind_native_key').prop('hidden', !TT).on('click.aqs', showNativeKeyPicker);
+            $('#aqs_native_key_select').on('change.aqs', function () { $('#aqs_native_key_apply').prop('disabled', !this.value); });
+            $('#aqs_native_key_apply').on('click.aqs', applyNativeKeyBinding);
+            $('#aqs_native_key_cancel').on('click.aqs', () => { closeNativeKeyPicker(); describeNativeSync(''); });
             $('#aqs_save').on('click.aqs', () => onSave(false));
             $('#aqs_save_use').on('click.aqs', () => onSave(true));
             $('#aqs_url').on('input.aqs', () => $('#aqs_form_hint').text(''));

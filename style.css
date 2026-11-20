@@ -182,3 +182,68 @@
 .aqs-api-embed-head, .aqs-qp-title { padding-bottom: 7px; border-bottom: 1px solid var(--aqs-border); }
 #aqs_quick_panel .aqs-search-bar { margin-top: 8px; }
 @media (pointer: coarse) { .aqs-settings .aqs-favorite { min-width: 44px; } }
+
+
+/* The wand floats above the chat, so use the host menu’s exact tint + blur.
+   The in-drawer version keeps its existing translucent treatment. */
+#aqs_quick_panel {
+    background: var(--SmartThemeBlurTintColor, Canvas);
+    color: var(--SmartThemeBodyColor, CanvasText);
+    border-color: var(--SmartThemeBorderColor, var(--aqs-border));
+    backdrop-filter: blur(max(8px, var(--SmartThemeBlurStrength, 0px)));
+    -webkit-backdrop-filter: blur(max(8px, var(--SmartThemeBlurStrength, 0px)));
+    font-family: var(--aqs-menu-font, inherit);
+    border-radius: 16px;
+    padding: 12px;
+}
+#aqs_quick_panel .aqs-qp-title { gap: 12px; }
+#aqs_quick_panel .aqs-qp-title-text { display: inline-flex; align-items: center; gap: 8px; font-weight: 650; }
+#aqs_quick_panel .aqs-qp-title-text i { color: var(--aqs-accent); }
+#aqs_quick_panel .aqs-qp-close { border-color: transparent; }
+#aqs_quick_panel .aqs-qp-item {
+    border-color: transparent;
+    border-inline-start: 3px solid transparent;
+    padding: 7px 10px;
+    margin-block: 2px;
+}
+#aqs_quick_panel .aqs-qp-item.aqs-active {
+    background: color-mix(in srgb, var(--aqs-accent) 10%, transparent);
+    border-inline-start-color: var(--aqs-accent);
+}
+#aqs_quick_panel .aqs-qp-group {
+    border-top: 1px solid var(--aqs-border);
+    margin-top: 8px;
+    padding: 7px 9px 2px;
+}
+#aqs_quick_panel input.aqs-search-input { background-color: color-mix(in srgb, var(--aqs-text) 6%, transparent); }
+#aqs_quick_panel .aqs-qp-locate, #aqs_api_embed_locate { min-width: 36px; }
+.aqs-form-card {
+    padding: 12px;
+    border: 1px solid var(--aqs-border);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--aqs-text) 4%, transparent);
+}
+.aqs-form-header, .aqs-field-header, .aqs-input-action {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.aqs-form-header { margin-bottom: 12px; }
+.aqs-form-title { margin: 0; }
+.aqs-form-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); }
+.aqs-field { display: grid; align-content: start; gap: 4px; min-width: 0; }
+.aqs-field small { color: var(--aqs-muted); font-size: .8em; font-weight: normal; }
+.aqs-field-wide { grid-column: 1 / -1; }
+.aqs-input-action { flex-wrap: nowrap; }
+.aqs-input-action input { flex: 1 1 0; }
+.aqs-input-action button { flex: none; }
+#aqs_form_hint:empty, #aqs_sync_feedback:empty { display: none; }
+.aqs-form-card :is(input, textarea) { scroll-margin-block: 12px; }
+@media (pointer: coarse) {
+    #aqs_quick_panel .aqs-qp-locate, #aqs_api_embed_locate { min-width: 44px; }
+}
+
+.aqs-settings button.aqs-group-head { width: 100%; text-align: start; border-color: transparent; }
+.aqs-settings div.aqs-group-head { cursor: default; }

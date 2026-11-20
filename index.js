@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '4.0.0';
+    const VERSION = '4.0.1';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -81,6 +81,7 @@
                     models,
                     group: typeof p.group === 'string' ? p.group.trim() : '',
                     favorite: p.favorite === true,
+                    needsKey: p.needsKey === true,
                 };
             });
         const dirty = rawProfiles.length !== cleanProfiles.length || rawProfiles.some((p, i) => {
@@ -107,10 +108,28 @@
                     && !url.username && !url.password && !url.search && !url.hash;
             } catch { return false; }
         }
-        const currentUrl = () => $('#main_api').val() === 'openai' && $('#chat_completion_source').val() === 'custom'
-            ? normUrl($('#custom_api_url_text').val()) : '';
-        const currentModel = () => String($('#custom_model_id').val() || '').trim();
-        const isActive = (p) => !!currentUrl() && currentUrl() === normUrl(p.url);
+        const currentUrl = () => {
+            const host = getCtx();
+            const source = $('#chat_completion_source').val() ?? host?.chatCompletionSettings?.chat_completion_source;
+            const format = host?.chatCompletionSettings?.custom_api_format;
+            const api = $('#main_api').val() ?? host?.mainApi;
+            return api === 'openai' && source === 'custom' && (!format || format === 'openai_compat')
+                ? normUrl($('#custom_api_url_text').val() ?? host?.chatCompletionSettings?.custom_url) : '';
+        };
+        const currentModel = () => String($('#custom_model_id').val() ?? getCtx()?.chatCompletionSettings?.custom_model ?? '').trim();
+        function currentProfile() {
+            const url = currentUrl();
+            if (!url) return null;
+            const matches = settings.profiles.filter(p => normUrl(p.url) === url);
+            if (matches.length === 1) return matches[0];
+            const known = matches.find(p => p.id === activeProfileId);
+            if (known) return known;
+            const model = currentModel();
+            const matchesModel = matches.filter(p => model && profileModels(p).includes(model));
+            return matchesModel.length === 1 ? matchesModel[0] : null;
+        }
+        let activeProfileId = null;
+        const isActive = (p) => currentProfile()?.id === p.id;
         const profileModels = (p) => splitModelValues(p && p.model, p && p.models);
         const matchSearch = (p) => {
             if (!searchQuery) return true;
@@ -222,6 +241,7 @@
             try {
                 const url = normUrl(p.url);
                 const key = String(p.key || '');
+                if (p.needsKey && !key) throw new Error('此站点缺少 API Key，请在扩展设置中编辑并补填');
                 if (!validApiUrl(url)) throw new Error('请填写有效的 HTTP(S) API 基础地址');
 
                 const controls = '#main_api, #chat_completion_source, #custom_api_url_text, #custom_model_id, #api_key_custom, #api_button_openai';
@@ -254,6 +274,7 @@
                     connect = await configure();
                 }
                 if (!connect.isConnected) throw new Error('连接面板已关闭，请打开后重试');
+                activeProfileId = p.id;
                 connect.click();
                 toastr.info('已提交「' + p.name + '」，请查看酒馆连接状态', 'API 快切');
                 renderAll();
@@ -824,7 +845,7 @@
             const meta = $('<div class="aqs-card-meta"></div>');
             if (models.length) $('<span class="aqs-chip aqs-chip-model"></span>').text(modelSummary(models)).attr('title', models.join('\n')).appendTo(meta);
             if (models.length > 1) $('<span class="aqs-chip aqs-chip-dim"></span>').text(models.length + ' 个模型').appendTo(meta);
-            $('<span class="aqs-chip aqs-chip-dim"></span>').text(p.key ? '已保存密钥' : '无密钥').appendTo(meta);
+            $('<span class="aqs-chip aqs-chip-dim"></span>').text(p.key ? '已保存密钥' : p.needsKey ? '待补密钥' : '无密钥').appendTo(meta);
             card.append(meta);
 
             if (models.length > 1 && !folded) {
@@ -861,11 +882,7 @@
                     setProfileModels(p, profileModels(p), m);
                     save();
                     renderAll();
-                    if (isActive(p)) {
-                        applyProfile(p, m);
-                    } else {
-                        toastr.success('已为「' + p.name + '」选择默认模型：' + m);
-                    }
+                    toastr.success('已为「' + p.name + '」设置默认模型：' + m);
                 })).appendTo(btns);
             $('<button class="menu_button aqs-btn" title="编辑"><i class="fa-solid fa-pen"></i></button>')
                 .on('click', () => startEdit(p)).appendTo(btns);
@@ -971,15 +988,19 @@
 
         function makeGroupBox(g) {
             const items = settings.profiles.filter((p) => p.group === g && matchSearch(p));
-            const collapsed = !!settings.groupCollapsed[g];
+            const collapsed = !searchQuery && Boolean(settings.groupCollapsed[g]);
             const box = $('<div class="aqs-group"></div>').toggleClass('aqs-collapsed', collapsed);
-            const head = $('<div class="aqs-group-head" title="点击展开/收起"></div>');
-            $('<i class="fa-solid fa-chevron-down aqs-group-chevron"></i>').appendTo(head);
+            const head = $(searchQuery ? '<div class="aqs-group-head"></div>'
+                : '<button type="button" class="aqs-group-head aqs-btn"></button>');
+            if (!searchQuery) {
+                head.attr('aria-expanded', String(!collapsed));
+                $('<i class="fa-solid fa-chevron-down aqs-group-chevron" aria-hidden="true"></i>').appendTo(head);
+            }
             $('<span class="aqs-group-name"></span>').text(g).appendTo(head);
             if (items.some(isActive)) $('<span class="aqs-group-live" title="当前连接在此分组"></span>').appendTo(head);
             $('<span class="aqs-group-count"></span>').text(items.length).appendTo(head);
-            head.on('click', () => {
-                settings.groupCollapsed[g] = !settings.groupCollapsed[g];
+            if (!searchQuery) head.on('click', () => {
+                settings.groupCollapsed[g] = !collapsed;
                 save();
                 renderList();
             });
@@ -1069,7 +1090,9 @@
             editingId = p.id;
             $('#aqs_name').val(p.name);
             $('#aqs_url').val(p.url);
-            $('#aqs_key').val(p.key || '');
+            $('#aqs_key').val(p.key || '').attr('type', 'password');
+            $('#aqs_key_toggle').attr('aria-pressed', 'false').text('显示');
+            $('#aqs_form_hint').text(p.needsKey && !p.key ? '此站点的原生密钥未读回，请补填。' : '');
             $('#aqs_model').val(profileModels(p).join('\n'));
             if (p.group && groupNames().includes(p.group)) setGroupState(p.group, false);
             else if (p.group) setGroupState('', true, p.group);
@@ -1084,51 +1107,71 @@
         function resetForm() {
             editingId = null;
             $('#aqs_name, #aqs_url, #aqs_key, #aqs_model').val('');
+            $('#aqs_key').attr('type', 'password');
+            $('#aqs_key_toggle').attr('aria-pressed', 'false').text('显示');
+            $('#aqs_form_hint').text('');
             setGroupState('', false);
             $('#aqs_form_title').text('新增站点');
             $('#aqs_save').html('<i class="fa-solid fa-plus"></i> 保存站点');
             $('#aqs_cancel_edit').hide();
         }
 
-        function onSave() {
-            const name = String($('#aqs_name').val() || '').trim();
-            const url = normUrl($('#aqs_url').val());
+        function formUrl() {
+            return normUrl($('#aqs_url').val()).replace(/\/(?:chat\/completions|models)$/i, '');
+        }
+
+        async function onSave(useNow = false) {
+            if (applyBusy) return;
+            const url = formUrl();
+            const name = String($('#aqs_name').val() || '').trim()
+                || (validApiUrl(url) ? uniqueProfileName(profileNameFromUrl(url)) : '');
             const key = String($('#aqs_key').val() || '').trim();
             const models = splitModelValues($('#aqs_model').val());
             const model = models[0] || '';
             const group = currentGroupValue();
 
-            if (!name || !url) { toastr.warning('名称和 URL 必填'); return; }
-            if (!validApiUrl(url)) { toastr.warning('请填写有效的 HTTP(S) API 基础地址'); return; }
+            if (!validApiUrl(url)) {
+                $('#aqs_form_hint').text('请输入有效的 HTTP(S) API 地址。');
+                $('#aqs_url')[0].focus();
+                return;
+            }
+            let saved;
+            const edits = { name, url, key, model, models, group };
+            const update = (profile) => {
+                const needsKey = Boolean(profile.needsKey && !key && normUrl(profile.url) === url);
+                return Object.assign(profile, edits, { needsKey });
+            };
 
             if (editingId) {
                 const p = settings.profiles.find((x) => x.id === editingId);
                 if (!p) { resetForm(); return; }
                 const dup = settings.profiles.find((x) => x.name === name && x.id !== editingId);
                 if (dup) { toastr.warning('已存在同名站点「' + name + '」'); return; }
-                Object.assign(p, { name, url, key, model, models, group });
+                saved = update(p);
                 toastr.success('已更新「' + name + '」');
             } else {
                 const dup = settings.profiles.find((x) => x.name === name);
                 if (dup) {
                     if (!confirm('已存在同名站点「' + name + '」，覆盖它吗？')) return;
-                    Object.assign(dup, { url, key, model, models, group });
+                    saved = update(dup);
                     toastr.success('已覆盖「' + name + '」');
                 } else {
-                    settings.profiles.push({ id: uid(), name, url, key, model, models, group });
+                    saved = { id: uid(), ...edits };
+                    settings.profiles.push(saved);
                     toastr.success('已保存「' + name + '」');
                 }
             }
             save();
             resetForm();
             renderAll();
+            if (useNow) await applyProfile(saved);
         }
 
         /* ---------------- 导入 / 导出 ---------------- */
         function exportProfiles(includeKeys = false) {
             if (!settings.profiles.length) { toastr.warning('没有可导出的站点'); return; }
             if (includeKeys && !confirm('完整备份包含明文 API Key。确认导出？')) return;
-            const profiles = settings.profiles.map(({ key, ...profile }) => includeKeys ? { ...profile, key } : profile);
+            const profiles = settings.profiles.map(({ key, ...profile }) => includeKeys ? { ...profile, key } : { ...profile, needsKey: Boolean(key || profile.needsKey) });
             const data = JSON.stringify({ app: EXT_NAME, version: VERSION, includesKeys: includeKeys, profiles }, null, 2);
             const blob = new Blob([data], { type: 'application/json' });
             const a = document.createElement('a');
@@ -1161,8 +1204,13 @@
                         if (!validApiUrl(clean.url)) continue;
                         const dup = settings.profiles.find((x) => x.name === clean.name);
                         if (typeof item.favorite === 'boolean') clean.favorite = item.favorite;
-                        if (typeof item.key === 'string') clean.key = item.key;
-                        else if (dup && normUrl(dup.url) !== clean.url) clean.key = '';
+                        if (typeof item.key === 'string') {
+                            clean.key = item.key;
+                            clean.needsKey = !item.key && item.needsKey === true;
+                        } else if (!dup || normUrl(dup.url) !== clean.url) {
+                            clean.key = '';
+                            clean.needsKey = item.needsKey === true;
+                        }
                         if (dup) { Object.assign(dup, clean); updated++; }
                         else { settings.profiles.push({ id: uid(), ...clean }); added++; }
                     }
@@ -1297,12 +1345,13 @@
             }
 
             const { vw, vh, x, y } = viewportSize();
-            const isPhone = vw < 700;
-            const isTablet = vw >= 700 && vw < 1100;
+            const isPhone = vw < 640;
+            const isTablet = !isPhone && (vw < 1100 || window.matchMedia('(pointer: coarse)').matches);
             const pad = isPhone ? 8 : 12;
             const gap = 8;
 
             // 清掉 CSS 默认 bottom/left/animation/transform，避免和 top 打架、被菜单半透明层盖住
+            const font = el.style.getPropertyValue('--aqs-menu-font');
             el.style.cssText = [
                 'display:block',
                 'position:fixed',
@@ -1318,8 +1367,9 @@
                 'bottom:auto',
                 'right:auto',
             ].map((s) => s + ' !important').join(';') + ';';
+            if (font) el.style.setProperty('--aqs-menu-font', font);
 
-            const maxW = Math.max(1, Math.min(isPhone ? 360 : (isTablet ? 380 : 400), vw - pad * 2));
+            const maxW = Math.max(1, Math.min(isPhone ? 360 : (isTablet ? 400 : 420), vw - pad * 2));
             const minW = Math.min(260, maxW);
             const maxH = Math.max(1, Math.min(Math.max(190, Math.round(vh * 0.55)), vh - pad * 2));
             el.style.setProperty('width', maxW + 'px', 'important');
@@ -1425,6 +1475,12 @@
             if (panel[0].parentElement !== document.documentElement) {
                 document.documentElement.appendChild(panel[0]);
             }
+            // The float lives outside body to avoid the drawer's clipping. Keep the host font and menu surface.
+            const menu = anchorEl?.parentElement;
+            if (menu) {
+                const style = getComputedStyle(menu);
+                panel[0].style.setProperty('--aqs-menu-font', style.fontFamily);
+            }
             renderQuickPanel();
             panel.show();
             const relayout = () => {
@@ -1463,6 +1519,8 @@
                 const next = String(input.val() || '');
                 if (next.trim() === searchQuery) return;
                 searchQuery = next.trim();
+                settings.pages.quick = settings.pages.embed = settings.pages.list.__sites__ = settings.pages.list.__groups__ = 0;
+                for (const group of groupNames()) settings.pages.list[groupPageKey(group)] = 0;
                 for (const field of document.querySelectorAll('.aqs-search-input')) {
                     if (field !== input[0]) field.value = searchQuery;
                 }
@@ -1480,14 +1538,18 @@
             const panel = $('#aqs_quick_panel');
             if (!panel.length) return;
             if (!panel.children('.aqs-qp-title').length) {
-                const title = $('<div class="aqs-qp-title"><span class="aqs-qp-title-text">API 快切</span></div>').appendTo(panel);
+                const title = $('<div class="aqs-qp-title"><span class="aqs-qp-title-text"><i class="fa-solid fa-shuffle" aria-hidden="true"></i> API 快切</span></div>').appendTo(panel);
                 $('<button type="button" class="aqs-qp-close" aria-label="关闭快切"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>')
                     .on('click', closeQuickPanel).appendTo(title);
                 addSearch(panel, 'quick');
+                const locate = $('<button type="button" class="aqs-btn aqs-qp-locate" aria-label="定位当前站点" title="定位当前站点"><i class="fa-solid fa-location-crosshairs" aria-hidden="true"></i></button>');
+                panel.children('.aqs-search-bar').append(locate);
+                locate.on('click', () => locateCurrent('quick'));
                 panel.append('<div class="aqs-quick-results"></div>');
             }
             panel.find('.aqs-search-input').each(function () { if (this !== document.activeElement) this.value = searchQuery; });
             panel.find('.aqs-search-clear').toggle(Boolean(searchQuery));
+            panel.find('.aqs-qp-locate').prop('disabled', !currentProfile());
             buildProfileItems(panel.children('.aqs-quick-results'), { pageKey: 'quick' });
         }
 
@@ -1498,82 +1560,70 @@
             buildProfileItems(body, { pageKey: 'embed' });
             const n = settings.profiles.filter(matchSearch).length;
             const total = settings.profiles.length;
+            $('#aqs_api_embed_locate').prop('disabled', !currentProfile());
             $('#aqs_api_embed_count').text(searchQuery ? n + '/' + total + ' 站' : total ? total + ' 站' : '空');
+        }
+
+        function locateCurrent(surface) {
+            const profile = currentProfile();
+            if (!profile) return;
+            const input = $(surface === 'quick' ? '#aqs_quick_panel .aqs-search-input' : '#aqs_embed_search input');
+            if (!matchSearch(profile)) input.val('').trigger('input');
+            const entries = orderedProfiles().filter(matchSearch);
+            settings.pages[surface] = Math.floor(entries.indexOf(profile) / PAGE_SIZE);
+            save();
+            if (surface === 'quick') {
+                renderQuickPanel();
+                layoutQuickPanel(document.getElementById('aqs_wand_btn'));
+            } else {
+                setEmbedCollapsed(false);
+                renderApiEmbed();
+            }
+            const box = document.querySelector(surface === 'quick' ? '#aqs_quick_panel' : '#aqs_api_embed');
+            box?.querySelector('.aqs-qp-item.aqs-active')?.scrollIntoView({ block: 'nearest' });
+        }
+
+        function setEmbedCollapsed(collapsed) {
+            $('#aqs_api_embed').toggleClass('aqs-collapsed', collapsed);
+            $('#aqs_api_embed_toggle').attr('aria-expanded', String(!collapsed)).find('i')
+                .toggleClass('fa-chevron-up', !collapsed).toggleClass('fa-chevron-down', collapsed);
+            if (settings.embedCollapsed !== collapsed) {
+                settings.embedCollapsed = collapsed;
+                save();
+            }
         }
 
         function ensureApiEmbed() {
             const host = $('#rm_api_block');
             if (!host.length) return false;
-            const existing = $('#aqs_api_embed');
-            if (existing.length) {
-                if (!host[0].contains(existing[0])) {
-                    const title = host.children('h3').first();
-                    if (title.length) title.after(existing);
-                    else host.prepend(existing);
-                }
-                // 宿主重建后可能丢了 jQuery 委托外的直绑；幂等重绑
-                $('#aqs_api_embed_refresh').off('click.aqs').on('click.aqs', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    renderApiEmbed();
-                    toastr.info('已刷新站点列表', 'API 快切');
-                });
-                $('#aqs_api_embed_toggle').off('click.aqs').on('click.aqs', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const collapsed = $('#aqs_api_embed').toggleClass('aqs-collapsed').hasClass('aqs-collapsed');
-                    $('#aqs_api_embed_toggle').attr('aria-expanded', String(!collapsed)).find('i')
-                        .toggleClass('fa-chevron-up', !collapsed)
-                        .toggleClass('fa-chevron-down', collapsed);
-                });
-                return true;
-            }
-
+            if (host.children('#aqs_api_embed').length) return true;
             const box = $(`
                 <div id="aqs_api_embed" class="aqs-api-embed">
                     <div class="aqs-api-embed-head">
                         <div class="aqs-api-embed-title">
-                            <i class="fa-solid fa-shuffle aqs-grad-icon"></i>
-                            <span>API 快切</span>
-                            <span class="aqs-api-embed-ver">v${VERSION}</span>
+                            <i class="fa-solid fa-shuffle" aria-hidden="true"></i>
+                            <span>API 快切</span><span class="aqs-api-embed-ver">v${VERSION}</span>
                         </div>
                         <div class="aqs-api-embed-actions">
                             <span id="aqs_api_embed_count" class="aqs-chip aqs-chip-dim">空</span>
-                            <button type="button" id="aqs_api_embed_refresh" class="menu_button menu_button_icon aqs-btn" aria-label="刷新列表">
-                                <i class="fa-solid fa-rotate" aria-hidden="true"></i>
+                            <button type="button" id="aqs_api_embed_locate" class="aqs-btn" aria-label="定位当前站点" title="定位当前站点">
+                                <i class="fa-solid fa-location-crosshairs" aria-hidden="true"></i>
                             </button>
-                            <button type="button" id="aqs_api_embed_toggle" class="menu_button menu_button_icon aqs-btn" aria-label="展开或收起快切" aria-expanded="true">
+                            <button type="button" id="aqs_api_embed_toggle" class="aqs-btn" aria-label="展开或收起快切" aria-expanded="true">
                                 <i class="fa-solid fa-chevron-up" aria-hidden="true"></i>
                             </button>
                         </div>
                     </div>
                     <div id="aqs_api_embed_body" class="aqs-api-embed-body"></div>
-                    <div class="aqs-api-embed-foot">
-                        <span class="aqs-note" style="margin:0">点站点即可切换 · 完整管理在「扩展」面板</span>
-                    </div>
+                    <div class="aqs-api-embed-foot"><span class="aqs-note">点站点或模型以切换 · 在「扩展」中管理站点</span></div>
                 </div>
             `);
-
-            // 插到 API 抽屉标题下方，作为主入口
             const title = host.children('h3').first();
             if (title.length) title.after(box);
             else host.prepend(box);
-
-            $('#aqs_api_embed_refresh').off('click.aqs').on('click.aqs', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                renderApiEmbed();
-                toastr.info('已刷新站点列表', 'API 快切');
-            });
-            $('#aqs_api_embed_toggle').off('click.aqs').on('click.aqs', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const collapsed = $('#aqs_api_embed').toggleClass('aqs-collapsed').hasClass('aqs-collapsed');
-                $('#aqs_api_embed_toggle').attr('aria-expanded', String(!collapsed)).find('i')
-                    .toggleClass('fa-chevron-up', !collapsed)
-                    .toggleClass('fa-chevron-down', collapsed);
-            });
-
+            box.find('#aqs_api_embed_locate').on('click', () => locateCurrent('embed'));
+            box.find('#aqs_api_embed_toggle').on('click', () => setEmbedCollapsed(!box.hasClass('aqs-collapsed')));
+            if (settings.embedCollapsed) setEmbedCollapsed(true);
             renderApiEmbed();
             return true;
         }
@@ -1714,70 +1764,86 @@
         }
 
         function captureNativeApiSnapshot() {
-            if (!settings.autoSyncNative || applyBusy) return null;
-            if (String($('#main_api').val() || '') !== 'openai') return null;
-            if (String($('#chat_completion_source').val() || '') !== 'custom') return null;
-            const url = normUrl($('#custom_api_url_text').val());
+            const url = currentUrl();
             if (!validApiUrl(url)) return null;
-            return {
-                url,
-                key: String($('#api_key_custom').val() || '').trim(),
-                model: String($('#custom_model_id').val() || '').trim(),
-            };
+            return { url, key: String($('#api_key_custom').val() || '').trim(), model: currentModel() };
         }
 
-        function upsertNativeProfile(snap) {
-            if (!settings.autoSyncNative || applyBusy || !snap) return false;
-            const url = normUrl(snap.url);
-            if (!validApiUrl(url)) return false;
-            const key = String(snap.key || '').trim();
-            const models = splitModelValues(snap.model);
-            // 没有可同步的新信息时不打扰用户；Key 若已被酒馆清空，也无法安全读回明文
-            if (!key && !models.length) return false;
+        function describeNativeSync(message) {
+            $('#aqs_sync_feedback').text(message);
+        }
 
-            let changed = false;
-            const hit = settings.profiles.find((p) => normUrl(p.url) === url);
-            if (hit) {
-                if (key && hit.key !== key) { hit.key = key; changed = true; }
-                const merged = splitModelValues(profileModels(hit), models);
-                if (merged.join('\n') !== profileModels(hit).join('\n')) {
-                    hit.models = merged;
-                    if (!hit.model) hit.model = merged[0] || '';
-                    changed = true;
-                }
-                if (changed) {
-                    save();
-                    renderAll();
-                    toastr.success('已同步原生连接到「' + hit.name + '」', 'API 快切');
-                }
-                return changed;
+        function upsertNativeProfile(snap, needsKey) {
+            if (!settings.autoSyncNative || applyBusy || currentUrl() !== snap.url || currentModel() !== snap.model) return;
+            const matches = settings.profiles.filter(p => normUrl(p.url) === snap.url);
+            const sameKey = snap.key && matches.find(p => p.key === snap.key);
+            const hit = sameKey || (matches.length === 1 ? matches[0] : null);
+            if (!hit && matches.length > 1) {
+                describeNativeSync('同一地址有多个站点。请在扩展中手动选择要更新的站点。');
+                toastr.info('同一地址有多个站点，未自动覆盖', 'API 快切');
+                return;
             }
-
-            const name = uniqueProfileName(profileNameFromUrl(url));
-            settings.profiles.push({
-                id: uid(),
-                name,
-                url,
-                key,
-                model: models[0] || '',
-                models,
-                group: '',
-            });
+            if (hit) {
+                const models = splitModelValues(profileModels(hit), snap.model);
+                if (snap.key) { hit.key = snap.key; hit.needsKey = false; }
+                // 保留该站点原来的默认模型，将原生面板的新模型加入列表。
+                hit.model = models[0] || '';
+                hit.models = models;
+                activeProfileId = hit.id;
+            } else {
+                const name = uniqueProfileName(profileNameFromUrl(snap.url));
+                const id = uid();
+                settings.profiles.push({ id, name, ...snap, models: splitModelValues(snap.model), group: '', needsKey });
+                activeProfileId = id;
+            }
             save();
             renderAll();
-            toastr.success('已从原生 API 面板同步「' + name + '」', 'API 快切');
-            return true;
+            const name = currentProfile()?.name || profileNameFromUrl(snap.url);
+            const message = !hit && needsKey ? '已同步「' + name + '」的地址和模型；请在快切中补填密钥。'
+                : '已同步「' + name + '」的连接配置。';
+            describeNativeSync(message);
+            toastr.info(message, 'API 快切');
         }
 
         function bindNativeSync() {
+            const { SECRET_WRITTEN } = ctx.eventTypes || {};
+            const observesWrites = Boolean(SECRET_WRITTEN && ctx.eventSource?.on);
+            let pending = null;
+            let expiry;
+            const clear = () => { clearTimeout(expiry); pending = null; };
+            if (observesWrites) ctx.eventSource.on(SECRET_WRITTEN, (key) => {
+                if (key !== SECRET_KEY_CUSTOM || !pending) return;
+                const snap = pending;
+                clear();
+                upsertNativeProfile(snap, false);
+            });
             document.addEventListener('click', (event) => {
-                if (!event.target.closest?.('#api_button_openai')) return;
+                if (!event.target.closest?.('#api_button_openai') || applyBusy || !settings.autoSyncNative) return;
                 const snap = captureNativeApiSnapshot();
+                clear();
                 if (!snap) return;
-                queueMicrotask(() => {
-                    if (currentUrl() === snap.url) upsertNativeProfile(snap);
-                });
+                if (snap.key && observesWrites) {
+                    pending = snap;
+                    describeNativeSync('等待酒馆保存新密钥…');
+                    expiry = setTimeout(() => {
+                        clear();
+                        describeNativeSync('未收到酒馆保存密钥的确认，没有同步这次修改。');
+                    }, 10000);
+                } else {
+                    queueMicrotask(async () => {
+                        let needsKey = false;
+                        if (!snap.key) {
+                            try { needsKey = (await readCustomSecrets()).some(item => item.active); }
+                            catch { needsKey = true; }
+                        }
+                        upsertNativeProfile(snap, needsKey);
+                    });
+                }
             }, true);
+            const invalidate = () => { if (pending) clear(); };
+            ctx.eventSource?.on?.(ctx.eventTypes?.CHATCOMPLETION_SOURCE_CHANGED || 'chatcompletion_source_changed', invalidate);
+            $(document).on('input.aqsSync', '#custom_api_url_text, #custom_model_id', invalidate);
+            $(document).on('input.aqsSync', '#api_key_custom', function () { if (this.value) invalidate(); });
         }
 
         function watchUiHosts() {
@@ -1813,7 +1879,7 @@
             }
 
             // 打开 API 抽屉时强制刷新嵌入列表
-            $(document).off('click.aqs_api_drawer').on('click.aqs_api_drawer', '#API-status-top, #sys-settings-button .drawer-toggle, #rm_api_block, #api_button_openai', () => {
+            $(document).off('click.aqs_api_drawer').on('click.aqs_api_drawer', '#API-status-top, #sys-settings-button .drawer-toggle', () => {
                 setTimeout(() => {
                     ensureApiEmbed();
                     renderApiEmbed();
@@ -1847,31 +1913,37 @@
                   <hr class="aqs-hr">
                   <div id="aqs_profile_list"></div>
                   <hr class="aqs-hr">
-                  <div class="aqs-form-title" id="aqs_form_title">新增站点</div>
-                  <input id="aqs_name" class="text_pole" type="text" placeholder="名称（如：OpenRouter）" autocomplete="off">
-                  <input id="aqs_url" class="text_pole" type="text" placeholder="API URL（https://.../v1）" autocomplete="off">
-                  <input id="aqs_key" class="text_pole" type="password" placeholder="API Key" autocomplete="off">
-                  <div class="aqs-model-row">
-                    <textarea id="aqs_model" class="text_pole" rows="2" placeholder="模型 ID（可多个：换行 / 逗号分隔，首个为默认）" autocomplete="off"></textarea>
-                    <div id="aqs_fetch_models" class="menu_button menu_button_icon aqs-btn" title="从接口拉取模型列表">
-                      <i class="fa-solid fa-list"></i> 获取模型
+                  <section class="aqs-form-card" aria-labelledby="aqs_form_title">
+                    <div class="aqs-form-header">
+                      <h4 class="aqs-form-title" id="aqs_form_title">新增站点</h4>
+                      <button type="button" id="aqs_fill_current" class="aqs-btn">用当前连接填入</button>
                     </div>
-                  </div>
-                  <div class="aqs-field-label">分组</div>
-                  <div id="aqs_group_picker"></div>
-                  <input id="aqs_group" class="text_pole" type="text" placeholder="输入新分组名" autocomplete="off" style="display:none;">
-                  <div class="aqs-form-btns">
-                    <div id="aqs_save" class="menu_button menu_button_icon aqs-btn aqs-btn-primary">
-                      <i class="fa-solid fa-plus"></i> 保存站点
+                    <div class="aqs-form-grid">
+                      <label class="aqs-field aqs-field-wide"><span>API 地址</span><input id="aqs_url" class="text_pole" type="text" inputmode="url" placeholder="https://example.com/v1" autocomplete="off" spellcheck="false" required></label>
+                      <label class="aqs-field"><span>站点名称 <small>可选</small></span><input id="aqs_name" class="text_pole" type="text" placeholder="留空则用域名" autocomplete="off"></label>
+                      <div class="aqs-field"><label for="aqs_key">API Key <small>按站点要求填写</small></label>
+                        <div class="aqs-input-action"><input id="aqs_key" class="text_pole" type="password" placeholder="输入站点密钥" autocomplete="off" data-tt-sensitive><button type="button" id="aqs_key_toggle" class="aqs-btn" aria-label="显示或隐藏 API Key" aria-pressed="false">显示</button></div>
+                      </div>
+                      <div class="aqs-field aqs-field-wide">
+                        <div class="aqs-field-header"><label for="aqs_model">模型 ID <small>首个为默认</small></label><button type="button" id="aqs_fetch_models" class="aqs-btn"><i class="fa-solid fa-list" aria-hidden="true"></i> 获取模型</button></div>
+                        <textarea id="aqs_model" class="text_pole" rows="2" placeholder="可填写多个，用换行或逗号分隔" autocomplete="off" spellcheck="false"></textarea>
+                      </div>
                     </div>
-                    <div id="aqs_cancel_edit" class="menu_button menu_button_icon aqs-btn" style="display:none;">
-                      取消编辑
+                    <div class="aqs-field-label">分组 · 可选</div>
+                    <div id="aqs_group_picker"></div>
+                    <input id="aqs_group" class="text_pole" type="text" aria-label="新分组名称" placeholder="输入新分组名" autocomplete="off" style="display:none;">
+                    <p id="aqs_form_hint" class="aqs-note" role="status"></p>
+                    <div class="aqs-form-btns">
+                      <button type="button" id="aqs_save" class="aqs-btn aqs-btn-primary"><i class="fa-solid fa-plus" aria-hidden="true"></i> 保存站点</button>
+                      <button type="button" id="aqs_save_use" class="aqs-btn">保存并切换</button>
+                      <button type="button" id="aqs_cancel_edit" class="aqs-btn" style="display:none;">取消编辑</button>
                     </div>
-                  </div>
-                  <label class="aqs-check-row" title="在酒馆原生 API 面板填写 URL / Key / 模型并点 Connect 后，自动保存到 API 快切">
+                  </section>
+                  <label class="aqs-check-row">
                     <input id="aqs_auto_sync_native" type="checkbox">
-                    <span>原生 API 连接后自动同步到快切</span>
+                    <span>点酒馆的「连接」时自动同步自定义站点</span>
                   </label>
+                  <span id="aqs_sync_feedback" class="aqs-note" role="status"></span>
                   <div class="aqs-io-btns">
                     <button type="button" id="aqs_export" class="menu_button aqs-btn">导出配置</button>
                     <button type="button" id="aqs_export_full" class="menu_button aqs-btn" title="包含明文 API Key">完整备份</button>
@@ -1906,7 +1978,27 @@
         let settingsPanel;
 
         function bindSettingsUi() {
-            $('#aqs_save').off('click.aqs').on('click.aqs', onSave);
+            $('#aqs_save').on('click.aqs', () => onSave(false));
+            $('#aqs_save_use').on('click.aqs', () => onSave(true));
+            $('#aqs_url').on('input.aqs', () => $('#aqs_form_hint').text(''));
+            $('#aqs_key_toggle').on('click.aqs', function () {
+                const field = $('#aqs_key');
+                const visible = field.attr('type') === 'password';
+                field.attr('type', visible ? 'text' : 'password');
+                $(this).attr('aria-pressed', String(visible)).text(visible ? '隐藏' : '显示');
+            });
+            $('#aqs_fill_current').on('click.aqs', () => {
+                const snap = captureNativeApiSnapshot();
+                if (!snap) { $('#aqs_form_hint').text('酒馆当前不是 OpenAI 兼容自定义连接，或未填写地址。'); return; }
+                const formAddress = formUrl();
+                if (formAddress && formAddress !== snap.url) {
+                    $('#aqs_form_hint').text('未覆盖不同地址的草稿；请先清空地址再填入。');
+                    return;
+                }
+                $('#aqs_url').val(snap.url);
+                if (!$('#aqs_model').val() && snap.model) $('#aqs_model').val(snap.model);
+                $('#aqs_form_hint').text('已填入当前地址和模型，API Key 不会从酒馆密钥库复制。');
+            });
             $('#aqs_cancel_edit').off('click.aqs').on('click.aqs', resetForm);
             $('#aqs_export').off('click.aqs').on('click.aqs', () => exportProfiles());
             $('#aqs_export_full').off('click.aqs').on('click.aqs', () => exportProfiles(true));
@@ -1916,7 +2008,7 @@
                 this.value = '';
             });
             $('#aqs_fetch_models').off('click.aqs').on('click.aqs', () => {
-                openModelPicker($('#aqs_url').val(), $('#aqs_key').val(), (m) => {
+                openModelPicker(formUrl(), $('#aqs_key').val(), (m) => {
                     const list = appendModelToInput('#aqs_model', m);
                     toastr.success('已加入：' + m + (list.length > 1 ? '（共 ' + list.length + ' 个模型）' : ''), 'API 快切');
                 });
@@ -1926,6 +2018,7 @@
                 .off('change.aqs')
                 .on('change.aqs', function () {
                     settings.autoSyncNative = !!this.checked;
+                    describeNativeSync(this.checked ? '' : '已关闭自动同步。');
                     save();
                 });
             $('#aqs_update_btn').off('click.aqs').on('click.aqs', async () => {

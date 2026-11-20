@@ -27,7 +27,9 @@ async function setup(page) {
             secrets: [{ id: 'native', value: 'native-test', label: '我的 API 快切备用', active: true }],
         };
         window.__TAURITAVERN__ = {};
-        window.SillyTavern = { getContext: () => ({ extensionSettings: { st_api_switcher: state }, saveSettingsDebounced() {}, getRequestHeaders: () => ({ 'Content-Type': 'application/json' }) }) };
+        const bus = new EventTarget();
+        const eventSource = { on: (name, fn) => bus.addEventListener(name, e => fn(e.detail)), emit: (name, detail) => bus.dispatchEvent(new CustomEvent(name, { detail })) };
+        window.SillyTavern = { getContext: () => ({ eventSource, eventTypes: { SECRET_WRITTEN: 'secret_written' }, extensionSettings: { st_api_switcher: state }, saveSettingsDebounced() {}, getRequestHeaders: () => ({ 'Content-Type': 'application/json' }) }) };
         window.toastr = new Proxy({}, { get: (_, level) => (message) => { state.lastToast = { level, message }; } });
         const source = $('<select id="chat_completion_source"><option value="openai">OpenAI</option><option value="custom_openai_responses">Responses</option><option value="custom">Custom</option></select>');
         const controls = $('<div><input id="custom_api_url_text"><input id="custom_model_id"><input id="api_key_custom" type="password"></div>');
@@ -36,7 +38,13 @@ async function setup(page) {
             event.stopPropagation();
             if (state.suspended) return;
             const key = String($('#api_key_custom').val() ?? '');
-            $('#api_key_custom').val('');
+            if (key) {
+                state.completeNativeWrite = () => {
+                    $('#api_key_custom').val('').trigger('input');
+                    eventSource.emit('secret_written', 'api_key_custom');
+                };
+                if (!state.holdNativeWrite) queueMicrotask(state.completeNativeWrite);
+            }
             state.connects.push({ url: $('#custom_api_url_text').val(), model: $('#custom_model_id').val(), key: key || state.secrets.find(x => x.active)?.value });
         };
         button.on('click', connect);
@@ -243,17 +251,64 @@ const scenarios = {
     async nativeSync(page) {
         await switchAndWait(page, 'Alpha', 1);
         const key = page.locator('#api_key_custom');
-        for (const value of ['fixture-key-1', 'fixture-key-2']) {
-            await key.fill(value);
-            await activate(page.locator('#api_button_openai'));
-            await wait(page, input => testState.profiles.find(p => p.name === 'Alpha').key === input, value);
+        await page.evaluate(() => { testState.holdNativeWrite = true; });
+        await key.fill('fixture-key-1');
+        await activate(page.locator('#api_button_openai'));
+        assert.equal(await page.evaluate(() => testState.profiles.find(p => p.name === 'Alpha').key), 'fixture-alpha');
+        await page.evaluate(() => testState.completeNativeWrite());
+        await wait(page, () => testState.profiles.find(p => p.name === 'Alpha').key === 'fixture-key-1');
+        await page.evaluate(() => { testState.holdNativeWrite = false; });
+        await page.locator('#custom_api_url_text').fill('https://blank.invalid/v1');
+        await page.locator('#custom_model_id').fill('');
+        await activate(page.locator('#api_button_openai'));
+        await wait(page, () => testState.profiles.find(p => p.name === 'blank.invalid')?.needsKey === true);
+        assert.equal(await page.evaluate(() => testState.profiles.find(p => p.name === 'blank.invalid').key), '');
+        await page.locator('#aqs_auto_sync_native').uncheck();
+        await page.locator('#custom_api_url_text').fill('https://disabled.invalid/v1');
+        await key.fill('fixture-key-disabled');
+        await activate(page.locator('#api_button_openai'));
+        assert.equal(await page.evaluate(() => testState.profiles.some(p => p.name === 'disabled.invalid')), false);
+    },
+    async newSite(page) {
+        await switchAndWait(page, 'Alpha', 1);
+        await activate(page.locator('#aqs_fill_current'));
+        assert.equal(await page.locator('#aqs_url').inputValue(), initial[0].url);
+        assert.equal(await page.locator('#aqs_model').inputValue(), initial[0].model);
+        assert.equal(await page.locator('#aqs_key').inputValue(), '');
+        await page.locator('#aqs_url').fill('https://new.invalid/v1/chat/completions');
+        await page.locator('#aqs_key').fill('fixture-new');
+        await activate(page.locator('#aqs_key_toggle'));
+        assert.equal(await page.locator('#aqs_key').getAttribute('type'), 'text');
+        await activate(page.locator('#aqs_save_use'));
+        await wait(page, () => testState.connects.length === 2);
+        assert.deepEqual(await page.evaluate(() => testState.connects[1]), { url: 'https://new.invalid/v1', key: 'fixture-new', model: 'model-a' });
+        assert.equal(await page.locator('#aqs_key').getAttribute('type'), 'password');
+        assert.equal(await page.evaluate(() => testState.profiles.find(p => p.url === 'https://new.invalid/v1').name), 'new.invalid');
+    },
+    async locateAndTheme(page, size) {
+        await switchAndWait(page, 'Alpha', 1);
+        const bar = page.locator('#aqs_embed_search input');
+        await bar.fill('Beta');
+        assert.equal(await page.locator('#aqs_api_embed .aqs-active').count(), 0);
+        await activate(page.locator('#aqs_api_embed_locate'));
+        assert.equal(await bar.inputValue(), '');
+        assert.match(await page.locator('#aqs_api_embed .aqs-active').innerText(), /Alpha/);
+        await activate(page.locator('#aqs_api_embed_toggle'));
+        await page.evaluate(() => { const host = document.querySelector('#rm_api_block'); host.replaceWith(host.cloneNode(false)); });
+        await page.locator('#aqs_api_embed_toggle').waitFor(timeout);
+        assert.equal(await page.locator('#aqs_api_embed_toggle').getAttribute('aria-expanded'), 'false');
+        await activate(page.locator('#aqs_wand_btn'));
+        await bounds(page, '#aqs_quick_panel', size.width, size.height);
+        for (const value of ['rgba(97, 78, 64, 0.75)', 'rgb(245, 232, 222)', 'rgb(0, 0, 0)']) {
+            await page.evaluate(tint => document.documentElement.style.setProperty('--SmartThemeBlurTintColor', tint), value);
+            const appearance = await page.locator('#aqs_quick_panel').evaluate(el => ({ bg: getComputedStyle(el).backgroundColor, image: getComputedStyle(el).backgroundImage }));
+            assert.deepEqual(appearance, { bg: value, image: 'none' });
         }
-        assert.equal(await page.evaluate(() => testState.profiles.length), 3);
     },
 };
 
 async function main() {
-    const rounds = Number(process.env.AQS_ROUNDS || 126);
+    const rounds = Number(process.env.AQS_ROUNDS || 162);
     const selected = process.env.AQS_SCENARIO;
     const browser = await chromium.launch({ args: ['--no-sandbox', '--disable-dev-shm-usage'] });
     const devices = [

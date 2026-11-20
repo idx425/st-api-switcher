@@ -106,7 +106,7 @@
 .aqs-api-embed-head, .aqs-qp-title, #aqs_model_modal .aqs-modal-head { justify-content: space-between; }
 .aqs-api-embed-foot, #aqs_api_embed .aqs-search-bar { margin-top: 8px; }
 #aqs_api_embed.aqs-collapsed :is(.aqs-search-bar, .aqs-api-embed-body, .aqs-api-embed-foot) { display: none; }
-#aqs_quick_panel, #aqs_model_modal .aqs-modal-box {
+#aqs_model_modal .aqs-modal-box {
     background: var(--aqs-base);
     background: linear-gradient(var(--aqs-bg), var(--aqs-bg)), var(--aqs-base);
     border: 1px solid var(--aqs-border);
@@ -186,10 +186,19 @@
 
 /* Keep the theme tint, but draw the floating menu on a solid surface. */
 #aqs_quick_panel {
-    background: Canvas;
-    background: rgb(from var(--SmartThemeBlurTintColor, Canvas) r g b / 1);
-    color: var(--SmartThemeBodyColor, CanvasText);
-    border-color: var(--SmartThemeBorderColor, var(--aqs-border));
+    /* Coherent, non-white fallback if palette sampling is unavailable. */
+    --aqs-bg: #202124;
+    --aqs-text: #f7f7f7;
+    --aqs-muted: #d5d5d5;
+    --aqs-accent: #ddd;
+    --aqs-border: #56575a;
+    --aqs-hover: #28292c;
+    --aqs-selected: #303134;
+    background: #202124;
+    background: var(--aqs-bg);
+    color: var(--aqs-text);
+    border: 1px solid var(--aqs-border);
+    box-shadow: 0 14px 44px rgba(0, 0, 0, .24);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
     filter: none;
@@ -208,7 +217,7 @@
     margin-block: 2px;
 }
 #aqs_quick_panel .aqs-qp-item.aqs-active {
-    background: color-mix(in srgb, var(--aqs-accent) 10%, transparent);
+    background: var(--aqs-selected);
     border-inline-start-color: var(--aqs-accent);
 }
 #aqs_quick_panel .aqs-qp-group {
@@ -216,7 +225,7 @@
     margin-top: 8px;
     padding: 7px 9px 2px;
 }
-#aqs_quick_panel input.aqs-search-input { background-color: color-mix(in srgb, var(--aqs-text) 6%, transparent); }
+#aqs_quick_panel input.aqs-search-input { background-color: var(--aqs-hover); }
 #aqs_quick_panel .aqs-qp-locate, #aqs_api_embed_locate { min-width: 36px; }
 .aqs-form-card {
     padding: 12px;
@@ -250,3 +259,11 @@
 .aqs-settings div.aqs-group-head { cursor: default; }
 
 #aqs_bind_native_key:not([hidden]) { margin-block-start: 8px; }
+
+#aqs_native_key_picker:not([hidden]) {
+    margin-block-start: 8px;
+    padding: 8px;
+    border: 1px solid var(--aqs-border);
+    border-radius: 8px;
+}
+#aqs_native_key_picker select { display: block; width: 100%; box-sizing: border-box; margin-block-start: 4px; }

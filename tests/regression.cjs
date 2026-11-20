@@ -19,7 +19,7 @@ const activate = async (locator) => (await locator.page().evaluate(() => matchMe
 async function setup(page) {
     await page.goto('http://fixture.invalid/');
     await page.addScriptTag({ path: require.resolve('jquery') });
-    await page.addStyleTag({ path: path.join(root, 'style.css') });
+    await page.addStyleTag({ path: process.env.AQS_BASELINE_CSS || path.join(root, 'style.css') });
     await page.evaluate((profiles) => {
         const $ = window.$;
         const state = window.testState = {
@@ -64,7 +64,10 @@ async function setup(page) {
             const json = (data, status) => Response.json(data, { status });
             if (options.signal?.aborted) throw options.signal.reason;
             state.requests.push(url);
-            if (url.endsWith('/secrets/read')) return json({ api_key_custom: state.secrets });
+            if (url.endsWith('/secrets/read')) {
+                if (state.delaySecretRead) await new Promise(resolve => { state.secretReadPending = resolve; });
+                return json({ api_key_custom: state.secrets });
+            }
             if (url.endsWith('/secrets/write')) {
                 if (state.failWrite) return json({ error: true }, 503);
                 for (const entry of state.secrets) entry.active = false;
@@ -281,14 +284,20 @@ const scenarios = {
         await page.locator('#custom_model_id').fill('bound-model');
         await page.evaluate(() => {
             testState.nativeModels['https://bound.invalid/v1'] = ['bound-model'];
-            for (const entry of testState.secrets) entry.active = entry.id === 'native';
         });
         await activate(page.locator('#api_button_openai'));
         await wait(page, () => testState.profiles.find(p => p.name === 'bound.invalid')?.needsKey === true);
         assert.equal(await page.evaluate(() => testState.lookup.some(x => x.custom_url === 'https://bound.invalid/v1')), false);
-        const confirm = page.waitForEvent('dialog').then(dialog => dialog.accept());
+        await page.evaluate(() => {
+            testState.secrets.find(entry => entry.id === 'native').active = false;
+        });
         await activate(page.locator('#aqs_bind_native_key'));
-        await confirm;
+        assert.equal(await page.locator('#aqs_native_key_target').innerText(), 'https://bound.invalid/v1');
+        assert.equal(await page.locator('#aqs_native_key_select option').count(), 2);
+        assert.equal(await page.locator('#aqs_native_key_apply').isDisabled(), true);
+        await page.locator('#aqs_native_key_select').selectOption('native');
+        await activate(page.locator('#aqs_native_key_apply'));
+        await page.locator('#aqs_native_key_picker').waitFor({ state: 'hidden', ...timeout });
         await wait(page, () => testState.profiles.find(p => p.name === 'bound.invalid')?.model === 'bound-model');
         const bound = await page.evaluate(() => testState.profiles.find(p => p.name === 'bound.invalid'));
         assert.equal(bound.nativeKeyId, 'native');
@@ -349,16 +358,52 @@ const scenarios = {
         assert.equal(await page.locator('#aqs_api_embed_toggle').getAttribute('aria-expanded'), 'false');
         await activate(page.locator('#aqs_wand_btn'));
         await bounds(page, '#aqs_quick_panel', size.width, size.height);
-        for (const value of ['rgba(97, 78, 64, 0.75)', 'rgb(245, 232, 222)', 'rgb(0, 0, 0)']) {
-            await page.evaluate(tint => document.documentElement.style.setProperty('--SmartThemeBlurTintColor', tint), value);
+        for (const palette of [
+            { tint: 'rgba(97, 78, 64, 0.75)', text: 'rgb(240, 235, 230)', expected: [97, 78, 64] },
+            { tint: 'rgb(245, 232, 222)', text: 'rgb(31, 26, 23)', expected: [245, 232, 222] },
+            { tint: 'rgb(0, 0, 0)', text: 'rgb(223, 227, 233)', expected: [0, 0, 0] },
+            { tint: 'rgba(255, 255, 255, 0.1)', text: 'rgb(223, 227, 233)' },
+            { tint: 'transparent', text: 'rgb(223, 227, 233)' },
+            { tint: '', text: 'rgb(223, 227, 233)' },
+        ]) {
+            // TT themes may scope variables to the body/drawer, while the wand floats outside body.
+            await page.evaluate(({ tint, text }) => {
+                document.documentElement.style.setProperty('--SmartThemeBlurTintColor', 'white');
+                document.documentElement.style.setProperty('--SmartThemeBodyColor', '#e7ebef');
+                const drawer = document.getElementById('rm_api_block');
+                drawer.style.backgroundColor = tint;
+                drawer.style.setProperty('--SmartThemeBlurTintColor', tint || 'transparent');
+                drawer.style.setProperty('--SmartThemeBodyColor', text);
+            }, palette);
             const appearance = await page.locator('#aqs_quick_panel').evaluate(el => {
-                const style = getComputedStyle(el);
                 const canvas = document.createElement('canvas').getContext('2d');
-                canvas.fillStyle = style.backgroundColor;
-                canvas.fillRect(0, 0, 1, 1);
-                return { rgba: [...canvas.getImageData(0, 0, 1, 1).data], image: style.backgroundImage, blur: style.backdropFilter };
+                const rgba = value => {
+                    canvas.clearRect(0, 0, 1, 1);
+                    canvas.fillStyle = value;
+                    canvas.fillRect(0, 0, 1, 1);
+                    return [...canvas.getImageData(0, 0, 1, 1).data];
+                };
+                const luminance = c => c.slice(0, 3).map(x => x / 255).map(x => x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4)
+                    .reduce((sum, x, i) => sum + x * [0.2126, 0.7152, 0.0722][i], 0);
+                const ratio = (a, b) => {
+                    const l = [luminance(a), luminance(b)].sort((x, y) => x - y);
+                    return (l[1] + .05) / (l[0] + .05);
+                };
+                const style = getComputedStyle(el);
+                const bg = rgba(style.backgroundColor);
+                const input = el.querySelector('input');
+                return {
+                    bg, image: style.backgroundImage, blur: style.backdropFilter,
+                    title: ratio(bg, rgba(getComputedStyle(el.querySelector('.aqs-qp-title-text')).color)),
+                    model: ratio(bg, rgba(getComputedStyle(el.querySelector('.aqs-qp-model')).color)),
+                    search: ratio(rgba(getComputedStyle(input).backgroundColor), rgba(getComputedStyle(input, '::placeholder').color)),
+                };
             });
-            assert.deepEqual(appearance, { rgba: [...value.match(/\d+/g).slice(0, 3).map(Number), 255], image: 'none', blur: 'none' });
+            if (palette.expected) assert.ok(palette.expected.every((v, i) => Math.abs(v - appearance.bg[i]) <= 1));
+            assert.equal(appearance.bg[3], 255);
+            assert.equal(appearance.image, 'none');
+            assert.equal(appearance.blur, 'none');
+            assert.ok(appearance.title >= 4.5 && appearance.model >= 4.5 && appearance.search >= 4.5, JSON.stringify(appearance));
         }
     },
 };

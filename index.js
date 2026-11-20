@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '3.8.0';
+    const VERSION = '4.1.0';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -80,6 +80,9 @@
                     model,
                     models,
                     group: typeof p.group === 'string' ? p.group.trim() : '',
+                    favorite: p.favorite === true,
+                    needsKey: p.needsKey === true,
+                    nativeKeyId: typeof p.nativeKeyId === 'string' ? p.nativeKeyId : '',
                 };
             });
         const dirty = rawProfiles.length !== cleanProfiles.length || rawProfiles.some((p, i) => {
@@ -99,9 +102,35 @@
 
         /* ---------------- 工具 ---------------- */
         const normUrl = (u) => String(u || '').trim().replace(/\/+$/, '');
-        const currentUrl = () => normUrl($('#custom_api_url_text').val());
-        const currentModel = () => String($('#custom_model_id').val() || '').trim();
-        const isActive = (p) => !!currentUrl() && currentUrl() === normUrl(p.url);
+        function validApiUrl(value) {
+            try {
+                const url = new URL(value);
+                return /^https?:\/\//i.test(value) && ['http:', 'https:'].includes(url.protocol)
+                    && !url.username && !url.password && !url.search && !url.hash;
+            } catch { return false; }
+        }
+        const currentUrl = () => {
+            const host = getCtx();
+            const source = $('#chat_completion_source').val() ?? host?.chatCompletionSettings?.chat_completion_source;
+            const format = host?.chatCompletionSettings?.custom_api_format;
+            const api = $('#main_api').val() ?? host?.mainApi;
+            return api === 'openai' && source === 'custom' && (!format || format === 'openai_compat')
+                ? normUrl($('#custom_api_url_text').val() ?? host?.chatCompletionSettings?.custom_url) : '';
+        };
+        const currentModel = () => String($('#custom_model_id').val() ?? getCtx()?.chatCompletionSettings?.custom_model ?? '').trim();
+        function currentProfile() {
+            const url = currentUrl();
+            if (!url) return null;
+            const matches = settings.profiles.filter(p => normUrl(p.url) === url);
+            if (matches.length === 1) return matches[0];
+            const known = matches.find(p => p.id === activeProfileId);
+            if (known) return known;
+            const model = currentModel();
+            const matchesModel = matches.filter(p => model && profileModels(p).includes(model));
+            return matchesModel.length === 1 ? matchesModel[0] : null;
+        }
+        let activeProfileId = null;
+        const isActive = (p) => currentProfile()?.id === p.id;
         const profileModels = (p) => splitModelValues(p && p.model, p && p.models);
         const matchSearch = (p) => {
             if (!searchQuery) return true;
@@ -133,235 +162,68 @@
 
         function fetchTimeout(url, opts, ms) {
             const ac = new AbortController();
-            const t = setTimeout(() => ac.abort(), ms || 8000);
-            return fetch(url, Object.assign({}, opts, { signal: ac.signal })).finally(() => clearTimeout(t));
+            const signal = opts.signal;
+            const cancel = () => ac.abort(signal.reason);
+            if (signal?.aborted) cancel();
+            else signal?.addEventListener('abort', cancel, { once: true });
+            const t = setTimeout(() => ac.abort(new DOMException('Request timeout', 'TimeoutError')), ms || 8000);
+            return fetch(url, { ...opts, signal: ac.signal }).finally(() => {
+                clearTimeout(t);
+                signal?.removeEventListener('abort', cancel);
+            });
         }
 
-        /* ST/TT 的 /api/secrets/write 只会追加新条目，不会原地覆盖。
-         * TT/新版 ST 的 Connect 会把 secret_state 里当前 active 的 id 作为 secret_id 发给后端；
-         * 若「先删后写」会让 secret_state 短暂指向已删除 id → Validation error: Secret id not found。
-         * 策略：先写 API 快切自己的新密钥（成为 active）→ 只删本插件旧条目 → 同步 secret_state。
-         * 绝不清空用户在酒馆原生界面保存的其它 api_key_custom 条目。
-         * Connect 前清空 #api_key_custom，避免官方再 write 追加一条。 */
         const SECRET_KEY_CUSTOM = 'api_key_custom';
         const SECRET_LABEL = 'API 快切';
+        const TT = Boolean(window.__TAURITAVERN__);
 
-        let secretsModulePromise = null;
-        function loadSecretsModule() {
-            if (!secretsModulePromise) {
-                secretsModulePromise = import('/scripts/secrets.js')
-                    .catch(() => import('../../scripts/secrets.js'))
-                    .catch((err) => {
-                        console.warn('[API快切] 无法加载 secrets 模块，使用裸 API', err);
-                        return null;
-                    });
-            }
-            return secretsModulePromise;
-        }
-
-        async function refreshSecretState() {
-            const mod = await loadSecretsModule();
-            if (mod && typeof mod.readSecretState === 'function') {
-                try {
-                    await mod.readSecretState();
-                    return true;
-                } catch (e) {
-                    console.warn('[API快切] readSecretState 失败', e);
-                }
-            }
-            // 最后兜底：直接改导出的 secret_state 引用
-            if (mod && mod.secret_state && typeof mod.secret_state === 'object') {
-                try {
-                    let headers;
-                    try {
-                        headers = ctx.getRequestHeaders({ omitContentType: true });
-                    } catch {
-                        headers = ctx.getRequestHeaders();
-                    }
-                    const res = await fetchTimeout('/api/secrets/read', {
-                        method: 'POST',
-                        headers,
-                    }, 8000);
-                    if (!res.ok) return false;
-                    const state = await res.json();
-                    for (const k of Object.keys(mod.secret_state)) delete mod.secret_state[k];
-                    Object.assign(mod.secret_state, state || {});
-                    if (typeof mod.updateSecretDisplay === 'function') mod.updateSecretDisplay();
-                    return true;
-                } catch (e) {
-                    console.warn('[API快切] 手动同步 secret_state 失败', e);
-                }
-            }
-            return false;
+        async function secretRequest(action, payload) {
+            const res = await fetchTimeout('/api/secrets/' + action, {
+                method: 'POST',
+                headers: ctx.getRequestHeaders({ omitContentType: payload === undefined }),
+                body: payload === undefined ? undefined : JSON.stringify({ key: SECRET_KEY_CUSTOM, ...payload }),
+            });
+            if (!res.ok) throw new Error('密钥操作失败 (' + action + ', HTTP ' + res.status + ')');
+            return res;
         }
 
         async function readCustomSecrets() {
-            try {
-                let headers;
-                try {
-                    headers = ctx.getRequestHeaders({ omitContentType: true });
-                } catch {
-                    headers = ctx.getRequestHeaders();
-                }
-                const res = await fetchTimeout('/api/secrets/read', {
-                    method: 'POST',
-                    headers,
-                }, 8000);
-                if (!res.ok) return [];
-                const state = await res.json();
-                const list = state && state[SECRET_KEY_CUSTOM];
-                return Array.isArray(list) ? list : [];
-            } catch {
-                return [];
-            }
-        }
-
-        async function deleteCustomSecret(id) {
-            const body = id
-                ? { key: SECRET_KEY_CUSTOM, id }
-                : { key: SECRET_KEY_CUSTOM };
-            const res = await fetchTimeout('/api/secrets/delete', {
-                method: 'POST',
-                headers: ctx.getRequestHeaders(),
-                body: JSON.stringify(body),
-            }, 8000);
-            return res.ok || res.status === 204;
-        }
-
-        // 串行化密钥库写操作，避免连点切换时 write/delete 交错
-        let secretWriteQueue = Promise.resolve();
-        function queueSecretWrite(task) {
-            const run = secretWriteQueue.then(task, task);
-            secretWriteQueue = run.then(() => undefined, () => undefined);
-            return run;
-        }
-
-        function normalizeSecretId(x) {
-            if (typeof x === 'string' || typeof x === 'number') return String(x);
-            if (x && (typeof x.id === 'string' || typeof x.id === 'number')) return String(x.id);
-            return null;
-        }
-
-        function secretItemLabel(item) {
-            return String(item && (item.label || item.name || item.title || item.comment || item.description) || '');
+            const state = await (await secretRequest('read')).json();
+            if (!state || typeof state !== 'object' || Array.isArray(state)) throw new Error('酒馆返回了无效的密钥状态');
+            const entries = state[SECRET_KEY_CUSTOM];
+            if (entries == null || entries === false) return [];
+            if (entries === true) return [{ active: true }];
+            if (!Array.isArray(entries)) throw new Error('酒馆返回了无效的自定义密钥列表');
+            return entries;
         }
 
         function isPluginSecret(item) {
-            if (!item) return false;
-            const id = normalizeSecretId(item);
-            if (id && settings.secretIds.includes(id)) return true;
-            const label = secretItemLabel(item);
-            return label === SECRET_LABEL || label.includes(SECRET_LABEL) || label.includes('ST API Switcher');
+            return Boolean(item?.id && (settings.secretIds.includes(String(item.id)) || item.label === SECRET_LABEL));
         }
 
-        function rememberPluginSecret(id) {
-            if (!id || settings.secretIds.includes(id)) return;
-            settings.secretIds.push(id);
-            try { save(); } catch { /* ignore */ }
-        }
-
-        function syncKnownPluginSecrets(list, keepId) {
-            const live = new Set((list || []).map(normalizeSecretId).filter(Boolean));
-            const next = uniqStrings([keepId, ...settings.secretIds]).filter((id) => live.has(id));
-            if (next.join('|') !== settings.secretIds.join('|')) {
-                settings.secretIds = next;
-                try { save(); } catch { /* ignore */ }
+        async function writeKey(value) {
+            const before = await readCustomSecrets();
+            // TT 支持保存空值，防止无 Key 站点继承原生槽里的密钥。
+            if (!TT && !value && !before.length) return;
+            if (!TT && !value) throw new Error('当前宿主无法安全使用无 Key 站点，请在原生连接面板管理已启用的自定义密钥');
+            const result = await (await secretRequest('write', { value, label: SECRET_LABEL })).json();
+            const id = typeof result?.id === 'string' ? result.id : typeof result === 'string' ? result : '';
+            if (!id) throw new Error('密钥写入结果缺少 ID，请在原生连接面板检查当前密钥');
+            settings.secretIds = uniqStrings([...settings.secretIds, id]);
+            save();
+            const after = await readCustomSecrets();
+            if ((TT || after.some((item) => item.id)) && !after.some((item) => String(item.id) === id && item.active)) {
+                throw new Error('酒馆未启用刚保存的密钥，请重试');
             }
-        }
-
-        async function pruneOtherCustomSecrets(keepId) {
-            if (keepId) rememberPluginSecret(keepId);
-            for (let round = 0; round < 6; round++) {
-                const list = await readCustomSecrets();
-                const pluginList = list.filter(isPluginSecret);
-                if (pluginList.length <= 1) {
-                    syncKnownPluginSecrets(list, keepId || (pluginList[0] && pluginList[0].id));
-                    return list;
+            for (const item of before.filter((entry) => isPluginSecret(entry) && String(entry.id) !== id)) {
+                try {
+                    await secretRequest('delete', { id: String(item.id) });
+                    settings.secretIds = settings.secretIds.filter((known) => known !== String(item.id));
+                } catch {
+                    toastr.warning('旧的快切密钥暂未清理，下次切换将重试', 'API 快切');
                 }
-                const keep = (keepId && pluginList.find((x) => x && x.id === keepId))
-                    || pluginList.find((x) => x && x.active)
-                    || pluginList[pluginList.length - 1];
-                let removed = 0;
-                for (const item of pluginList) {
-                    if (!item || !item.id || !keep || item.id === keep.id) continue;
-                    if (await deleteCustomSecret(item.id)) removed += 1;
-                }
-                syncKnownPluginSecrets(await readCustomSecrets(), keep && keep.id);
-                if (!removed) break;
-                await sleep(30);
             }
-            const finalList = await readCustomSecrets();
-            syncKnownPluginSecrets(finalList, keepId);
-            return finalList;
-        }
-
-        async function deletePluginCustomSecrets() {
-            const list = await readCustomSecrets();
-            for (const item of list.filter(isPluginSecret)) {
-                if (item && item.id) await deleteCustomSecret(item.id);
-            }
-            settings.secretIds = [];
-            try { save(); } catch { /* ignore */ }
-            await refreshSecretState();
-        }
-
-        async function writeKey(key) {
-            const value = String(key || '');
-            return queueSecretWrite(async () => {
-                const mod = await loadSecretsModule();
-
-                // 空 Key：只清本插件自己的槽位；不删除用户在酒馆原生界面保存的 Key
-                if (!value) {
-                    await deletePluginCustomSecrets();
-                    return;
-                }
-
-                // 1) 先写入新密钥（成为 active），绝不能先删光再写
-                let keepId = null;
-                if (mod && typeof mod.writeSecret === 'function') {
-                    keepId = normalizeSecretId(await mod.writeSecret(SECRET_KEY_CUSTOM, value, SECRET_LABEL));
-                    await refreshSecretState();
-                    if (!keepId) {
-                        // 有些 ST 版本 writeSecret 不返回 id：先从 secret_state/read 里找刚写入的插件条目，找不到再回退裸 API，避免重复追加
-                        const list = await readCustomSecrets();
-                        const pluginList = list.filter(isPluginSecret);
-                        const hit = pluginList.find((x) => x && x.active) || pluginList[pluginList.length - 1];
-                        keepId = normalizeSecretId(hit);
-                    }
-                    if (!keepId) {
-                        // writeSecret 失败或无法定位时回退裸 API
-                        const res = await fetchTimeout('/api/secrets/write', {
-                            method: 'POST',
-                            headers: ctx.getRequestHeaders(),
-                            body: JSON.stringify({ key: SECRET_KEY_CUSTOM, value, label: SECRET_LABEL }),
-                        }, 8000);
-                        if (!res.ok) throw new Error('写入密钥失败: HTTP ' + res.status);
-                        try {
-                            const data = await res.json();
-                            keepId = normalizeSecretId(data);
-                        } catch { /* ignore */ }
-                        await refreshSecretState();
-                    }
-                } else {
-                    const res = await fetchTimeout('/api/secrets/write', {
-                        method: 'POST',
-                        headers: ctx.getRequestHeaders(),
-                        body: JSON.stringify({ key: SECRET_KEY_CUSTOM, value, label: SECRET_LABEL }),
-                    }, 8000);
-                    if (!res.ok) throw new Error('写入密钥失败: HTTP ' + res.status);
-                    try {
-                        const data = await res.json();
-                        keepId = normalizeSecretId(data);
-                    } catch { /* ignore */ }
-                    await refreshSecretState();
-                }
-
-                // 2) 再删旧条目，只保留刚写入的那条（覆盖语义、不堆密钥）
-                await pruneOtherCustomSecrets(keepId);
-
-                // 3) 最终同步前端 secret_state，保证 Connect 带上的 secret_id 存在
-                await refreshSecretState();
-            });
+            save();
         }
 
         /* ---------------- 核心：应用配置 ---------------- */
@@ -377,43 +239,51 @@
                 return false;
             }
             applyBusy = true;
+            invalidateNativeSync();
             try {
                 const url = normUrl(p.url);
                 const key = String(p.key || '');
-                if (!url) throw new Error('站点 URL 为空');
-                if (!key) toastr.warning('该站点未保存 API Key，连接可能失败', 'API 快切');
+                if (p.needsKey && !key && !p.nativeKeyId) throw new Error('此站点缺少 API Key，请在扩展设置中编辑并补填');
+                if (!validApiUrl(url)) throw new Error('请填写有效的 HTTP(S) API 基础地址');
 
-                // 先切源再写 URL/Key，避免源切换时清空；只有值真的不同才 trigger，避免 ST 弹出无意义的“预设切换”提示
-                const mainChanged = setSelectValueIfNeeded('#main_api', 'openai');
-                if (mainChanged) await sleep(120);
-                const $source = await waitForElement('#chat_completion_source', 1500);
-                if ($source.length && String($source.val() || '') !== 'custom') {
-                    $source.val('custom').trigger('change');
-                    await sleep(120);
-                }
-                const $urlInput = await waitForElement('#custom_api_url_text', 2500);
-                if (!$urlInput.length) {
-                    throw new Error('未找到自定义接口输入框，请确认酒馆版本（需 1.12+）');
-                }
-
-                // 只写一次密钥库（覆盖本插件自己的槽位），URL/模型写进表单
-                await writeKey(key);
-                $urlInput.val(url).trigger('input').trigger('change');
-                // 模型字段始终写入（含清空），避免沿用上一站点模型；支持同站多模型快捷选择
+                const controls = '#main_api, #chat_completion_source, #custom_api_url_text, #custom_model_id, #api_key_custom, #api_button_openai';
+                const getControls = () => Object.fromEntries([...document.querySelectorAll(controls)].map((el) => [el.id, el]));
+                const ready = (fields) => fields.main_api?.value === 'openai' && fields.chat_completion_source?.value === 'custom'
+                    && fields.custom_api_url_text && fields.custom_model_id && fields.api_key_custom && fields.api_button_openai;
                 const targetModel = String(modelOverride !== undefined ? modelOverride : (p.model || '')).trim();
-                $('#custom_model_id').val(targetModel).trigger('input').trigger('change');
-                // 关键关键输入框！Connect 看到有值会再 writeSecret 追加一条
-                // 密钥已在 secrets 里激活，custom 源允许 keyless 继续连接
-                $('#api_key_custom').val('').trigger('input').trigger('change');
-                await sleep(120);
-                // Connect 前再清一次可见 Key，防止中间异步回填导致再 write 一条
-                $('#api_key_custom').val('');
-
-                const $btn = $('#api_button_openai');
-                if ($btn.length) $btn.trigger('click');
-                else toastr.warning('未找到 Connect 按钮，已写入 URL/Key，请手动点连接');
-
-                toastr.success('已切换到「' + p.name + (targetModel ? ' · ' + targetModel : '') + '」', 'API 快切');
+                const configure = async () => {
+                    const main = await waitForElement('#main_api');
+                    if (!main.length) throw new Error('请先打开 API 连接抽屉');
+                    setSelectValueIfNeeded('#main_api', 'openai');
+                    const source = await waitForElement('#chat_completion_source');
+                    if (source.length) setSelectValueIfNeeded('#chat_completion_source', 'custom');
+                    await waitForElement('#custom_api_url_text');
+                    if (!ready(getControls())) throw new Error('自定义连接面板尚未就绪，请打开 API 连接抽屉重试');
+                    if (!key && p.nativeKeyId) {
+                        const entries = await readCustomSecrets();
+                        const bound = entries.find(item => item.id === p.nativeKeyId);
+                        if (!bound) throw new Error('已绑定的 TT 密钥不存在，请重新绑定或编辑站点填写 Key');
+                        if (!bound.active) await secretRequest('rotate', { id: bound.id });
+                    } else await writeKey(key);
+                    const fields = getControls();
+                    if (!ready(fields)) throw new Error('切换期间连接面板发生变化，请重试');
+                    $(fields.custom_api_url_text).val(url).trigger('input').trigger('change');
+                    $(fields.custom_model_id).val(targetModel).trigger('input').trigger('change');
+                    $(fields.api_key_custom).val('').trigger('input');
+                    return fields.api_button_openai;
+                };
+                let connect;
+                if (TT) {
+                    const { withConnectionValidationSuspended } = await import('/script.js');
+                    if (typeof withConnectionValidationSuspended !== 'function') throw new Error('此 TT 版本缺少安全切换连接所需的接口');
+                    connect = await withConnectionValidationSuspended('API 快切', configure);
+                } else {
+                    connect = await configure();
+                }
+                if (!connect.isConnected) throw new Error('连接面板已关闭，请打开后重试');
+                activeProfileId = p.id;
+                connect.click();
+                toastr.info('已提交「' + p.name + '」，请查看酒馆连接状态', 'API 快切');
                 renderAll();
                 // Connect 异步改 DOM 后补刷一次高亮
                 setTimeout(() => { try { renderAll(); } catch { /* ignore */ } }, 400);
@@ -657,7 +527,7 @@
                 return '被拒绝访问（403）。可能是 Key 权限不足，或站点拦了当前网络';
             }
             if (/Failed to fetch|NetworkError|CORS|blocked by CORS|Load failed/i.test(s)) {
-                return '浏览器直连被拦（CORS/网络）。将自动改走酒馆服务器代理；若仍失败，多半是该站点拦了酒馆服务器 IP';
+                return '浏览器无法直连。请检查网络和站点的 CORS 配置，或手动填写模型 ID';
             }
             if (/timeout|aborted|AbortError/i.test(s)) {
                 return '请求超时。站点太慢或当前网络访问不到该域名';
@@ -668,339 +538,94 @@
             return s;
         }
 
-        function resolveFetchKey(url, key) {
-            let k = String(key || '').trim();
-            if (k) return k;
-            const formKey = String($('#aqs_key').val() || '').trim();
-            if (formKey) return formKey;
-            const u = normUrl(url);
-            // 同 URL 的已保存站点（编辑时密码框有时是空的，别误用当前连接的 Key）
-            const byUrl = settings.profiles.find((p) => normUrl(p.url) === u && String(p.key || '').trim());
-            if (byUrl) return String(byUrl.key || '').trim();
-            // 再退回当前连接站点
-            const active = settings.profiles.find(isActive);
-            return active ? String(active.key || '').trim() : '';
-        }
-
-        function modelEndpoints(baseUrl) {
-            const u = normUrl(baseUrl);
-            if (!u) return [];
-            const eps = [];
-            // OpenAI 兼容：base 通常以 /v1 结尾，只拼 /models
-            eps.push(u + '/models');
-            if (!/\/v\d+$/i.test(u)) eps.push(u + '/v1/models');
-            // 少数网关挂在根路径
-            if (/\/v1$/i.test(u)) eps.push(u.replace(/\/v1$/i, '') + '/models');
-            return [...new Set(eps)];
-        }
-
-        async function fetchModelsDirect(url, key) {
-            // 浏览器直连：走手机/本机网络，避开「酒馆服务器 IP 被中转站墙」
-            let lastErr = '';
-            for (const ep of modelEndpoints(url)) {
+        async function fetchModelList(url, key, signal, { nativeKeyId, exact = false } = {}) {
+            if (!validApiUrl(url)) throw new Error('请填写有效的 HTTP(S) API 基础地址');
+            const useKey = String(key || '').trim();
+            if (TT && !useKey && !nativeKeyId && (await readCustomSecrets()).length) {
+                throw new Error('酒馆保存了自定义密钥。请填写此站点自己的 Key，避免获取模型时使用其他站点的密钥。');
+            }
+            let lastError;
+            for (const base of exact ? [url] : candidateUrls(url)) {
+                if (signal?.aborted) throw signal.reason;
                 try {
-                    const res = await fetchTimeout(ep, {
-                        method: 'GET',
-                        headers: {
-                            'Authorization': 'Bearer ' + (key || ''),
-                            'Accept': 'application/json',
-                        },
-                        mode: 'cors',
-                        cache: 'no-store',
-                    }, 20000);
-                    const text = await res.text();
-                    let json = null;
-                    try { json = text ? JSON.parse(text) : null; } catch { /* ignore */ }
-                    if (!res.ok) {
-                        lastErr = errMsgFromJson(json, 'HTTP ' + res.status) + ' @ ' + ep;
-                        continue;
+                    // TT 保持桌面/移动端的端点信任检查，通过请求头指定当前站点的 Key。
+                    const target = TT ? '/api/backends/chat-completions/status' : base + '/models';
+                    const authorization = useKey ? 'Bearer ' + useKey : '';
+                    const options = TT ? {
+                        method: 'POST',
+                        headers: ctx.getRequestHeaders(),
+                        body: JSON.stringify({
+                            chat_completion_source: 'custom', custom_url: base, custom_api_format: 'openai_compat',
+                            ...(nativeKeyId ? { secret_id: nativeKeyId } : {}),
+                            ...(authorization ? { custom_include_headers: { Authorization: authorization } } : {}),
+                        }),
+                    } : {
+                        method: 'GET', headers: { Accept: 'application/json', ...(authorization ? { Authorization: authorization } : {}) },
+                        cache: 'no-store', redirect: 'error', credentials: 'omit',
+                    };
+                    const res = await fetchTimeout(target, { ...options, signal }, 12000);
+                    const json = await res.json().catch(() => null);
+                    if (!res.ok || json?.error || json?.cancelled) {
+                        const error = new Error(String(errMsgFromJson(json, 'HTTP ' + res.status)).replaceAll(useKey || '\0', '[已隐藏]'));
+                        if (TT || res.status === 401 || res.status === 403) throw Object.assign(error, { terminal: true });
+                        throw error;
                     }
-                    const models = extractModels(json);
+                    const models = uniqStrings(extractModels(json)).sort((a, b) => a.localeCompare(b));
                     if (models.length) return models;
-                    lastErr = '空列表 @ ' + ep;
-                } catch (e) {
-                    lastErr = String(e && e.message || e) + ' @ ' + ep;
+                    lastError = new Error('接口没有返回模型列表');
+                } catch (error) {
+                    if (signal?.aborted) throw signal.reason;
+                    if (error.terminal) throw error;
+                    lastError = error;
                 }
             }
-            throw new Error(lastErr || '浏览器直连失败');
-        }
-
-        async function fetchModelsViaProxy(url) {
-            const res = await fetchTimeout('/api/backends/chat-completions/status', {
-                method: 'POST',
-                headers: ctx.getRequestHeaders(),
-                body: JSON.stringify({
-                    chat_completion_source: 'custom',
-                    custom_url: url,
-                }),
-            }, 25000);
-            const text = await res.text();
-            let json = null;
-            try { json = text ? JSON.parse(text) : null; } catch { /* ignore */ }
-            if (!res.ok) {
-                throw new Error(errMsgFromJson(json, text || ('HTTP ' + res.status)).slice(0, 200));
-            }
-            const models = extractModels(json);
-            if (models.length) return models;
-            // 酒馆在上游失败时仍可能 200 + {error:true, data:{data:[]}}
-            if (json && json.error) {
-                throw new Error(errMsgFromJson(json, '上游 /models 失败'));
-            }
-            throw new Error('接口没有返回模型列表');
-        }
-
-        async function fetchModelList(url, key) {
-            // 拉模型：优先浏览器直连（与手机网络一致），失败再走酒馆代理
-            // 写密钥库仅服务代理路径；结束后还原，避免污染当前连接
-            const activeProfile = settings.profiles.find(isActive);
-            const prevKey = String($('#api_key_custom').val() || '').trim()
-                || (activeProfile ? String(activeProfile.key || '').trim() : '');
-            const useKey = resolveFetchKey(url, key);
-            if (!useKey) throw new Error('未填写 API Key，无法获取模型');
-
-            const urls = candidateUrls(url);
-            let lastErr = '';
-            let wroteProxyKey = false;
-
-            try {
-                // 1) 浏览器直连
-                for (const u of urls) {
-                    try {
-                        const models = await fetchModelsDirect(u, useKey);
-                        return [...new Set(models)].sort((a, b) => a.localeCompare(b));
-                    } catch (e) {
-                        lastErr = String(e && e.message || e);
-                    }
-                }
-
-                // 2) 酒馆服务端代理（需要把目标 Key 临时写入密钥库；仍只保留一条）
-                await writeKey(useKey);
-                wroteProxyKey = true;
-                // 不把 Key 留在可见框，避免用户点 Connect 再追加一条
-                $('#api_key_custom').val('');
-                await sleep(250);
-                for (const u of urls) {
-                    try {
-                        const models = await fetchModelsViaProxy(u);
-                        return [...new Set(models)].sort((a, b) => a.localeCompare(b));
-                    } catch (e) {
-                        lastErr = String(e && e.message || e);
-                    }
-                }
-                throw new Error(humanizeFetchErr(lastErr || '获取模型失败'));
-            } finally {
-                // 只要写过密钥库，就尽量还原到「当前连接站点」的 Key，避免污染
-                // 必须 await：否则与后续 applyProfile 的 writeKey 竞态
-                if (wroteProxyKey) {
-                    const restore = (activeProfile && String(activeProfile.key || '').trim()) || prevKey;
-                    try {
-                        if (restore) {
-                            if (restore !== useKey) await writeKey(restore);
-                        } else {
-                            // 当前连接原本没有自定义 Key 时，临时代理 Key 也要清掉，避免后续 Connect 误用
-                            await writeKey('');
-                        }
-                    } catch (e) {
-                        console.warn('[API快切] 还原密钥失败', e);
-                    }
-                    $('#api_key_custom').val('');
-                }
-            }
+            throw new Error(humanizeFetchErr(lastError?.message || '获取模型失败'));
         }
 
         function viewportSize() {
-            const vv = window.visualViewport;
-            const nums = (...xs) => xs.filter((n) => typeof n === 'number' && isFinite(n) && n > 0);
-            // 取最可信的可视宽高：visualViewport 优先，但异常过小时回退
-            let vh = Math.round(Math.max(...nums(
-                vv && vv.height,
-                window.innerHeight,
-                document.documentElement && document.documentElement.clientHeight,
-                640,
-            )));
-            let vw = Math.round(Math.max(...nums(
-                vv && vv.width,
-                window.innerWidth,
-                document.documentElement && document.documentElement.clientWidth,
-                360,
-            )));
-            // 有的手机浏览器 vv 只报地址栏缝隙高度，强制用 inner*
-            if (vv && vv.height && window.innerHeight && vv.height < window.innerHeight * 0.6) {
-                vh = Math.round(window.innerHeight);
-            }
-            if (vv && vv.width && window.innerWidth && vv.width < window.innerWidth * 0.6) {
-                vw = Math.round(window.innerWidth);
-            }
-            // 不要硬抬高 vh，否则短屏会把弹窗算到屏幕外
-            return { vw: Math.max(280, vw), vh: Math.max(280, vh) };
+            const viewport = window.visualViewport;
+            return viewport?.width > 0 && viewport?.height > 0
+                ? { vw: viewport.width, vh: viewport.height, x: viewport.offsetLeft, y: viewport.offsetTop }
+                : { vw: window.innerWidth, vh: window.innerHeight, x: 0, y: 0 };
         }
 
-        function layoutModelModal(root) {
-            const el = root && root.nodeType ? root : (root && root[0]) || null;
-            if (!el || !el.isConnected) return;
-            const box = el.querySelector('.aqs-modal-box');
-            if (!box) return;
-            const list = el.querySelector('.aqs-modal-list');
-            const head = box.querySelector('.aqs-modal-head');
-            const filter = box.querySelector('.aqs-modal-filter');
-
-            const { vw, vh } = viewportSize();
-            const isPhone = vw < 700;
-            // 用 flex 居中全屏遮罩，彻底避开 absolute top 算偏导致「只剩一条缝」
-            el.style.cssText = [
-                'position:fixed',
-                'inset:0',
-                'top:0',
-                'left:0',
-                'right:0',
-                'bottom:0',
-                'width:100%',
-                'height:100%',
-                'width:100vw',
-                'height:100vh',
-                'height:100dvh',
-                'margin:0',
-                'padding:' + (isPhone ? '12px' : '24px'),
-                'display:flex',
-                'align-items:center',
-                'justify-content:center',
-                'box-sizing:border-box',
-                'overflow:hidden',
-                'z-index:2147483000',
-                'transform:none',
-                'background:rgba(2,4,10,0.86)',
-                'backdrop-filter:blur(8px)',
-                '-webkit-backdrop-filter:blur(8px)',
-                'visibility:visible',
-                'opacity:1',
-                'pointer-events:auto',
-            ].map((s) => s + ' !important').join(';') + ';';
-
-            const pad = isPhone ? 12 : 24;
-            const boxW = Math.max(280, Math.min(isPhone ? (vw - pad * 2) : 480, vw - pad * 2));
-            // 永远不超过可视区；短屏优先“塞进屏幕”而不是硬撑 360px
-            const maxBoxH = Math.max(240, vh - pad * 2);
-            const preferH = Math.round(vh * (isPhone ? 0.86 : 0.78));
-            const floorH = Math.min(isPhone ? 320 : 360, maxBoxH);
-            const boxH = Math.max(floorH, Math.min(preferH, maxBoxH));
-
-            box.style.cssText = [
-                'position:relative',
-                'top:auto',
-                'left:auto',
-                'right:auto',
-                'bottom:auto',
-                'width:' + boxW + 'px',
-                'max-width:calc(100vw - ' + (pad * 2) + 'px)',
-                'height:' + boxH + 'px',
-                'max-height:' + maxBoxH + 'px',
-                'min-height:0',
-                'margin:0',
-                'transform:none',
-                'display:flex',
-                'flex-direction:column',
-                'flex:0 1 auto',
-                'box-sizing:border-box',
-                'overflow:hidden',
-                'visibility:visible',
-                'opacity:1',
-                'z-index:2147483001',
-                'border:1px solid rgba(255,255,255,0.28)',
-                'border-radius:' + (isPhone ? '16' : '19') + 'px',
-                'background:#0f1522',
-                'padding:14px',
-                'color:#f8fbff',
-                '-webkit-text-fill-color:#f8fbff',
-                'pointer-events:auto',
-                'box-shadow:0 22px 60px rgba(0,0,0,0.65)',
-            ].map((s) => s + ' !important').join(';') + ';';
-
-            if (head) {
-                head.style.cssText = [
-                    'display:flex',
-                    'align-items:center',
-                    'justify-content:space-between',
-                    'flex:0 0 auto',
-                    'padding:4px 2px 11px',
-                    'box-sizing:border-box',
-                    'width:100%',
-                    'color:#ffffff',
-                    '-webkit-text-fill-color:#ffffff',
-                ].map((s) => s + ' !important').join(';') + ';';
-            }
-            if (filter) {
-                filter.style.cssText = [
-                    'display:block',
-                    'width:100%',
-                    'flex:0 0 auto',
-                    'box-sizing:border-box',
-                    'margin:0 0 10px 0',
-                    'border-radius:11px',
-                    'color:#ffffff',
-                    '-webkit-text-fill-color:#ffffff',
-                    'background:rgba(255,255,255,0.10)',
-                    'padding:11px 12px',
-                    'font-size:16px',
-                ].map((s) => s + ' !important').join(';') + ';';
-            }
-            if (list) {
-                list.style.cssText = [
-                    'display:block',
-                    'visibility:visible',
-                    'opacity:1',
-                    'flex:1 1 auto',
-                    'min-height:0',
-                    'height:auto',
-                    'max-height:none',
-                    'overflow-y:auto',
-                    'overflow-x:hidden',
-                    '-webkit-overflow-scrolling:touch',
-                    'overscroll-behavior:contain',
-                    'touch-action:pan-y',
-                    'color:#ffffff',
-                    '-webkit-text-fill-color:#ffffff',
-                    'box-sizing:border-box',
-                    'width:100%',
-                ].map((s) => s + ' !important').join(';') + ';';
-            }
-            el.setAttribute('data-aqs-layout', vw + 'x' + vh + (isPhone ? ':phone' : ':desk'));
+        function layoutModelModal(overlay) {
+            const { vw, vh, x, y } = viewportSize();
+            overlay.style.setProperty('--aqs-vw', vw + 'px');
+            overlay.style.setProperty('--aqs-vh', vh + 'px');
+            overlay.style.setProperty('--aqs-vx', x + 'px');
+            overlay.style.setProperty('--aqs-vy', y + 'px');
         }
 
-        function openModelPicker(url, key, onPick) {
+        let closeModelPicker;
+
+        function openModelPicker(url, key, onPick, nativeKeyId) {
             url = normUrl(url);
-            if (!url) { toastr.warning('请先填写接口 URL'); return; }
+            if (!validApiUrl(url)) { toastr.warning('请填写有效的 HTTP(S) API 基础地址'); return; }
 
-            $('#aqs_model_modal').remove();
+            closeModelPicker?.();
+            const request = new AbortController();
+            const opener = document.activeElement;
             const overlay = $(`
                 <div id="aqs_model_modal" role="dialog" aria-modal="true" aria-label="选择模型">
                   <div class="aqs-modal-box">
                     <div class="aqs-modal-head">
-                      <span><i class="fa-solid fa-microchip"></i> MODEL·SELECT<i class="aqs-blink">▊</i></span>
-                      <i class="fa-solid fa-xmark aqs-modal-close" title="关闭" role="button" tabindex="0"></i>
+                      <span>选择模型</span>
+                      <button type="button" class="aqs-modal-close" aria-label="关闭"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>
                     </div>
                     <input class="text_pole aqs-modal-filter" placeholder="搜索模型…">
                     <div class="aqs-modal-list">
-                      <div class="aqs-modal-loading"><i class="fa-solid fa-circle-notch fa-spin"></i>&nbsp; SCANNING…</div>
+                      <div class="aqs-modal-loading"><i class="fa-solid fa-circle-notch fa-spin"></i>&nbsp; 正在获取模型…</div>
                     </div>
                   </div>
                 </div>`);
             // 挂到 <html>，避开 body 内 transform/overflow 把 fixed 算歪
             $(document.documentElement).append(overlay);
-            overlay.find('.aqs-modal-filter').focus();
+            if (!window.matchMedia('(pointer: coarse)').matches) overlay.find('.aqs-modal-filter')[0].focus({ preventScroll: true });
             const host = overlay[0];
-            const relayout = () => {
-                try { layoutModelModal(host); } catch (e) { console.error('[API快切] layout', e); }
-            };
+            const relayout = () => { if (host.isConnected) layoutModelModal(host); };
+            const onResize = relayout;
             relayout();
-            requestAnimationFrame(() => {
-                relayout();
-                requestAnimationFrame(relayout);
-            });
-            setTimeout(relayout, 16);
-            setTimeout(relayout, 50);
-            setTimeout(relayout, 160);
-            setTimeout(relayout, 360);
-            const onResize = () => relayout();
             window.addEventListener('resize', onResize);
             window.addEventListener('orientationchange', onResize);
             if (window.visualViewport) {
@@ -1009,14 +634,12 @@
             }
 
             const prevOverflow = document.body.style.overflow;
-            const prevTouch = document.body.style.touchAction;
             const prevHtmlOverflow = document.documentElement.style.overflow;
             let isClosed = false;
             const close = () => {
                 if (isClosed) return;
                 isClosed = true;
                 document.body.style.overflow = prevOverflow;
-                document.body.style.touchAction = prevTouch;
                 document.documentElement.style.overflow = prevHtmlOverflow;
                 window.removeEventListener('resize', onResize);
                 window.removeEventListener('orientationchange', onResize);
@@ -1025,38 +648,28 @@
                     window.visualViewport.removeEventListener('scroll', onResize);
                 }
                 overlay.remove();
-                $('#aqs_model_modal').remove();
-                $(document).off('keydown.aqsmodal');
+                request.abort();
+                closeModelPicker = undefined;
+                document.removeEventListener('keydown', onKey, true);
+                if (opener?.isConnected) opener.focus({ preventScroll: true });
             };
             document.body.style.overflow = 'hidden';
-            document.body.style.touchAction = 'none';
             document.documentElement.style.overflow = 'hidden';
             // 弹窗挂在 html 上，点击事件若冒泡到 document，酒馆会判定"点击了面板外部"
             // 而关闭整个扩展设置面板，导致选完模型被踢回主界面 —— 全部拦截
             overlay.on('pointerdown pointerup mousedown mouseup click touchstart touchend wheel', (e) => {
                 e.stopPropagation();
-                if (e.target === overlay[0]) {
-                    if (e.type === 'click' || e.type === 'pointerdown' || e.type === 'mousedown' || e.type === 'touchstart' || e.type === 'pointerup' || e.type === 'touchend') {
-                        close();
-                    }
-                }
+                if (e.type === 'click' && e.target === host) close();
             });
-            // 列表内部允许滚动，外层不滚动页面
-            overlay.find('.aqs-modal-list').on('touchmove wheel', (e) => e.stopPropagation());
-            overlay.find('.aqs-modal-close').on('click keydown pointerup touchend', (e) => {
-                if (e.type === 'click' || e.type === 'pointerup' || e.type === 'touchend' || e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    close();
-                }
-            });
-            $(document).on('keydown.aqsmodal', (e) => {
+            overlay.find('.aqs-modal-close').on('click', close);
+            const onKey = (e) => {
                 if (e.key !== 'Escape') return;
                 e.preventDefault();
-                if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
-                e.stopPropagation();
+                e.stopImmediatePropagation();
                 close();
-            });
+            };
+            document.addEventListener('keydown', onKey, true);
+            closeModelPicker = close;
 
             const list = overlay.find('.aqs-modal-list');
             const showError = (msg) => {
@@ -1065,7 +678,7 @@
                 box.append($('<div></div>').text(String(msg || '获取失败')));
                 $('<button type="button" class="menu_button aqs-btn aqs-btn-primary" style="margin-top:12px;">重试</button>')
                     .on('click', () => {
-                        list.html('<div class="aqs-modal-loading"><i class="fa-solid fa-circle-notch fa-spin"></i>&nbsp; SCANNING…</div>');
+                        list.html('<div class="aqs-modal-loading"><i class="fa-solid fa-circle-notch fa-spin"></i>&nbsp; 正在获取模型…</div>');
                         relayout();
                         doFetch();
                     })
@@ -1075,8 +688,9 @@
             };
 
             const doFetch = () => {
-                fetchModelList(url, key)
+                fetchModelList(url, key, request.signal, { nativeKeyId })
                     .then((models) => {
+                        if (isClosed) return;
                         const render = (filter) => {
                             list.empty();
                             const f = String(filter || '').toLowerCase();
@@ -1088,7 +702,6 @@
                             }
                             for (const m of subset) {
                                 $('<div class="aqs-modal-item" tabindex="0" role="option"></div>').text(m)
-                                    .css({ color: '#ffffff', webkitTextFillColor: '#ffffff', opacity: 1 })
                                     .on('click', () => { close(); onPick(m); })
                                     .on('keydown', (e) => {
                                         if (e.key === 'Enter' || e.key === ' ') {
@@ -1101,11 +714,11 @@
                             }
                             relayout();
                         };
-                        render('');
+                        render(overlay.find('.aqs-modal-filter').val());
                         overlay.find('.aqs-modal-filter')
                             .off('input.aqs').on('input.aqs', function () { render(this.value); })
                             .off('keydown.aqs').on('keydown.aqs', function (e) {
-                                if (e.key === 'Enter') {
+                                if (e.key === 'Enter' && !e.originalEvent?.isComposing && e.which !== 229) {
                                     e.preventDefault();
                                     e.stopPropagation();
                                     const firstItem = list.find('.aqs-modal-item').first();
@@ -1123,7 +736,7 @@
                         toastr.success('共 ' + models.length + ' 个模型', 'API 快切');
                     })
                     .catch((err) => {
-                        console.error('[API快切] 获取模型失败', err);
+                        if (isClosed) return;
                         const msg = humanizeFetchErr(String(err && err.message || err));
                         toastr.error(msg, '获取模型失败');
                         showError(msg);
@@ -1180,7 +793,7 @@
             for (const g of groupNames()) {
                 settings.profiles.filter((p) => p.group === g).forEach((p) => out.push(p));
             }
-            return out;
+            return out.sort((a, b) => Number(Boolean(b.favorite)) - Number(Boolean(a.favorite)));
         }
 
         function isModelFolded(p) {
@@ -1221,17 +834,26 @@
             const card = $('<div class="aqs-card"></div>').toggleClass('aqs-active', active);
 
             const head = $('<div class="aqs-card-head"></div>');
-            $('<span class="aqs-dot"></span>').appendTo(head);
             $('<span class="aqs-card-name"></span>').text(p.name).appendTo(head);
-            if (active) $('<span class="aqs-badge">LINKED</span>').appendTo(head);
+            if (active) $('<span class="aqs-badge">当前</span>').appendTo(head);
+            $('<button type="button" class="aqs-btn aqs-favorite"></button>')
+                .attr({ 'aria-label': (p.favorite ? '取消收藏 ' : '收藏 ') + p.name, 'aria-pressed': String(Boolean(p.favorite)) })
+                .text(p.favorite ? '★' : '☆')
+                .on('click', () => {
+                    p.favorite = !p.favorite;
+                    settings.pages.quick = 0;
+                    settings.pages.embed = 0;
+                    save();
+                    renderAll();
+                }).appendTo(head);
             card.append(head);
 
             $('<div class="aqs-card-url"></div>').text(p.url).appendTo(card);
 
             const meta = $('<div class="aqs-card-meta"></div>');
             if (models.length) $('<span class="aqs-chip aqs-chip-model"></span>').text(modelSummary(models)).attr('title', models.join('\n')).appendTo(meta);
-            if (models.length > 1) $('<span class="aqs-chip aqs-chip-dim"></span>').text(models.length + ' MODELS').appendTo(meta);
-            $('<span class="aqs-chip aqs-chip-dim"></span>').text(p.key ? 'KEY ✓' : 'NO KEY').appendTo(meta);
+            if (models.length > 1) $('<span class="aqs-chip aqs-chip-dim"></span>').text(models.length + ' 个模型').appendTo(meta);
+            $('<span class="aqs-chip aqs-chip-dim"></span>').text(p.key ? '已保存密钥' : p.nativeKeyId ? '已绑定 TT 密钥' : p.needsKey ? '待补密钥' : '无密钥').appendTo(meta);
             card.append(meta);
 
             if (models.length > 1 && !folded) {
@@ -1268,12 +890,8 @@
                     setProfileModels(p, profileModels(p), m);
                     save();
                     renderAll();
-                    if (isActive(p)) {
-                        applyProfile(p, m);
-                    } else {
-                        toastr.success('已为「' + p.name + '」选择默认模型：' + m);
-                    }
-                })).appendTo(btns);
+                    toastr.success('已为「' + p.name + '」设置默认模型：' + m);
+                }, p.nativeKeyId)).appendTo(btns);
             $('<button class="menu_button aqs-btn" title="编辑"><i class="fa-solid fa-pen"></i></button>')
                 .on('click', () => startEdit(p)).appendTo(btns);
             $('<button class="menu_button aqs-btn aqs-danger" title="删除"><i class="fa-solid fa-trash"></i></button>')
@@ -1378,28 +996,48 @@
 
         function makeGroupBox(g) {
             const items = settings.profiles.filter((p) => p.group === g && matchSearch(p));
-            const collapsed = !!settings.groupCollapsed[g];
+            const collapsed = !searchQuery && Boolean(settings.groupCollapsed[g]);
             const box = $('<div class="aqs-group"></div>').toggleClass('aqs-collapsed', collapsed);
-            const head = $('<div class="aqs-group-head" title="点击展开/收起"></div>');
-            $('<i class="fa-solid fa-chevron-down aqs-group-chevron"></i>').appendTo(head);
+            const head = $(searchQuery ? '<div class="aqs-group-head"></div>'
+                : '<button type="button" class="aqs-group-head aqs-btn"></button>');
+            if (!searchQuery) {
+                head.attr('aria-expanded', String(!collapsed));
+                $('<i class="fa-solid fa-chevron-down aqs-group-chevron" aria-hidden="true"></i>').appendTo(head);
+            }
             $('<span class="aqs-group-name"></span>').text(g).appendTo(head);
             if (items.some(isActive)) $('<span class="aqs-group-live" title="当前连接在此分组"></span>').appendTo(head);
             $('<span class="aqs-group-count"></span>').text(items.length).appendTo(head);
-            head.on('click', () => {
-                settings.groupCollapsed[g] = !settings.groupCollapsed[g];
+            let collapsedAt;
+            if (!searchQuery) head.on('click', () => {
+                const collapsed = box.hasClass('aqs-collapsed');
+                settings.groupCollapsed[g] = !collapsed;
                 save();
-                renderList();
+                const scrollers = [];
+                for (let el = head[0].parentElement; el; el = el.parentElement) {
+                    if (el.scrollTop || /auto|scroll/.test(getComputedStyle(el).overflowY)) scrollers.push([el, el.scrollTop]);
+                }
+                box.toggleClass('aqs-collapsed', !collapsed);
+                head.attr('aria-expanded', String(collapsed));
+                body.toggle(collapsed);
+                if (collapsed && !body.children().length) appendPagedCards(body, items, groupPageKey(g), renderList);
+                for (const [el, top] of scrollers) {
+                    const previous = collapsedAt?.get(el);
+                    el.scrollTop = collapsed && previous?.clamped === top ? previous.top : top;
+                }
+                collapsedAt = collapsed ? undefined : new Map(scrollers.map(([el, top]) => [el, { top, clamped: el.scrollTop }]));
             });
             box.append(head);
             const body = $('<div class="aqs-group-body"></div>');
             // 组内站点仍按 4 条分页，避免展开后一长串
+            body.toggle(!collapsed);
             if (!collapsed) appendPagedCards(body, items, groupPageKey(g), renderList);
             box.append(body);
             return box;
         }
 
         function renderList() {
-            const list = $('#aqs_profile_list').empty();
+            const list = $('#aqs_profile_list');
+            if (!list.length) return;
             const names = groupNames();
             for (const k of Object.keys(settings.groupCollapsed)) {
                 if (!names.includes(k)) delete settings.groupCollapsed[k];
@@ -1413,23 +1051,7 @@
             }
             renderGroupPicker();
 
-            // 搜索栏
-            const searchBar = $('<div class="aqs-search-bar"></div>');
-            const searchInput = $('<input id="aqs_search" class="text_pole aqs-search-input" type="text" placeholder="搜索站点（名称 / URL / 模型 / 分组）…" autocomplete="off">')
-                .val(searchQuery);
-            const searchClear = $('<div id="aqs_search_clear" class="menu_button menu_button_icon aqs-btn aqs-search-clear" title="清除搜索"><i class="fa-solid fa-xmark"></i></div>')
-                .toggle(!!searchQuery);
-            searchBar.append(searchInput, searchClear);
-            list.append(searchBar);
-            searchInput.on('input.aqs', function () {
-                searchQuery = String(this.value || '').trim();
-                $('#aqs_search_clear').toggle(!!searchQuery);
-                renderListContent();
-            });
-            searchClear.on('click.aqs', () => {
-                searchQuery = '';
-                $('#aqs_search').val('').trigger('input');
-            });
+            if (!list.children('.aqs-search-bar').length) addSearch(list, 'settings');
 
             renderListContent();
 
@@ -1491,7 +1113,9 @@
             editingId = p.id;
             $('#aqs_name').val(p.name);
             $('#aqs_url').val(p.url);
-            $('#aqs_key').val(p.key || '');
+            $('#aqs_key').val(p.key || '').attr('type', 'password');
+            $('#aqs_key_toggle').attr('aria-pressed', 'false').text('显示');
+            $('#aqs_form_hint').text(p.needsKey && !p.key ? '此站点的原生密钥未读回，请补填。' : '');
             $('#aqs_model').val(profileModels(p).join('\n'));
             if (p.group && groupNames().includes(p.group)) setGroupState(p.group, false);
             else if (p.group) setGroupState('', true, p.group);
@@ -1506,57 +1130,83 @@
         function resetForm() {
             editingId = null;
             $('#aqs_name, #aqs_url, #aqs_key, #aqs_model').val('');
+            $('#aqs_key').attr('type', 'password');
+            $('#aqs_key_toggle').attr('aria-pressed', 'false').text('显示');
+            $('#aqs_form_hint').text('');
             setGroupState('', false);
             $('#aqs_form_title').text('新增站点');
             $('#aqs_save').html('<i class="fa-solid fa-plus"></i> 保存站点');
             $('#aqs_cancel_edit').hide();
         }
 
-        function onSave() {
-            const name = String($('#aqs_name').val() || '').trim();
-            const url = normUrl($('#aqs_url').val());
+        function formUrl() {
+            return normUrl($('#aqs_url').val()).replace(/\/(?:chat\/completions|models)$/i, '');
+        }
+
+        async function onSave(useNow = false) {
+            if (applyBusy) return;
+            const url = formUrl();
+            const name = String($('#aqs_name').val() || '').trim()
+                || (validApiUrl(url) ? uniqueProfileName(profileNameFromUrl(url)) : '');
             const key = String($('#aqs_key').val() || '').trim();
             const models = splitModelValues($('#aqs_model').val());
             const model = models[0] || '';
             const group = currentGroupValue();
 
-            if (!name || !url) { toastr.warning('名称和 URL 必填'); return; }
-            if (!/^https?:\/\//i.test(url)) { toastr.warning('URL 需要以 http:// 或 https:// 开头'); return; }
+            if (!validApiUrl(url)) {
+                $('#aqs_form_hint').text('请输入有效的 HTTP(S) API 地址。');
+                $('#aqs_url')[0].focus();
+                return;
+            }
+            let saved;
+            const edits = { name, url, key, model, models, group };
+            const update = (profile) => {
+                const needsKey = Boolean(!key && (profile.needsKey || profile.nativeKeyId) && normUrl(profile.url) === url);
+                const nativeKeyId = !key && normUrl(profile.url) === url ? profile.nativeKeyId : '';
+                return Object.assign(profile, edits, { needsKey, nativeKeyId });
+            };
 
             if (editingId) {
                 const p = settings.profiles.find((x) => x.id === editingId);
                 if (!p) { resetForm(); return; }
                 const dup = settings.profiles.find((x) => x.name === name && x.id !== editingId);
                 if (dup) { toastr.warning('已存在同名站点「' + name + '」'); return; }
-                Object.assign(p, { name, url, key, model, models, group });
+                saved = update(p);
                 toastr.success('已更新「' + name + '」');
             } else {
                 const dup = settings.profiles.find((x) => x.name === name);
                 if (dup) {
                     if (!confirm('已存在同名站点「' + name + '」，覆盖它吗？')) return;
-                    Object.assign(dup, { url, key, model, models, group });
+                    saved = update(dup);
                     toastr.success('已覆盖「' + name + '」');
                 } else {
-                    settings.profiles.push({ id: uid(), name, url, key, model, models, group });
+                    saved = { id: uid(), ...edits };
+                    settings.profiles.push(saved);
                     toastr.success('已保存「' + name + '」');
                 }
             }
             save();
             resetForm();
             renderAll();
+            if (useNow) await applyProfile(saved);
         }
 
         /* ---------------- 导入 / 导出 ---------------- */
-        function exportProfiles() {
+        function exportProfiles(includeKeys = false) {
             if (!settings.profiles.length) { toastr.warning('没有可导出的站点'); return; }
-            const data = JSON.stringify({ app: 'st-api-switcher', version: VERSION, profiles: settings.profiles }, null, 2);
+            if (includeKeys && !confirm('完整备份包含明文 API Key。确认导出？')) return;
+            const profiles = settings.profiles.map(({ key, nativeKeyId, ...profile }) => {
+                const needsKey = Boolean(nativeKeyId || profile.needsKey || (!includeKeys && key));
+                return includeKeys ? { ...profile, key, needsKey } : { ...profile, needsKey };
+            });
+            const data = JSON.stringify({ app: EXT_NAME, version: VERSION, includesKeys: includeKeys, profiles }, null, 2);
             const blob = new Blob([data], { type: 'application/json' });
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
-            a.download = 'st-api-switcher-backup.json';
+            a.download = includeKeys ? 'st-api-switcher-full-backup.json' : 'st-api-switcher-profiles.json';
             a.click();
-            URL.revokeObjectURL(a.href);
-            toastr.info('备份文件包含明文 Key，请妥善保管', '已导出');
+            setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+            toastr.info(includeKeys ? '完整备份包含明文 Key，请妥善保管' : '已导出站点配置，未包含 Key', '已导出');
         }
 
         function importProfiles(file) {
@@ -1564,7 +1214,7 @@
             reader.onload = () => {
                 try {
                     const data = JSON.parse(String(reader.result));
-                    const arr = Array.isArray(data) ? data : data.profiles;
+                    const arr = Array.isArray(data) ? data : data?.profiles;
                     if (!Array.isArray(arr)) throw new Error('文件格式不正确');
                     let added = 0, updated = 0;
                     for (const item of arr) {
@@ -1573,14 +1223,23 @@
                         const clean = {
                             name: String(item.name || '').trim(),
                             url: normUrl(item.url),
-                            key: typeof item.key === 'string' ? item.key : String(item.key || ''),
                             model: models[0] || '',
                             models,
                             group: typeof item.group === 'string' ? item.group.trim() : '',
                         };
                         if (!clean.name || !clean.url) continue;
-                        if (!/^https?:\/\//i.test(clean.url)) continue;
+                        if (!validApiUrl(clean.url)) continue;
                         const dup = settings.profiles.find((x) => x.name === clean.name);
+                        if (typeof item.favorite === 'boolean') clean.favorite = item.favorite;
+                        if (typeof item.key === 'string') {
+                            clean.key = item.key;
+                            if (item.key || !dup || normUrl(dup.url) !== clean.url) clean.nativeKeyId = '';
+                            clean.needsKey = !item.key && item.needsKey === true;
+                        } else if (!dup || normUrl(dup.url) !== clean.url) {
+                            clean.key = '';
+                            clean.nativeKeyId = '';
+                            clean.needsKey = item.needsKey === true;
+                        }
                         if (dup) { Object.assign(dup, clean); updated++; }
                         else { settings.profiles.push({ id: uid(), ...clean }); added++; }
                     }
@@ -1591,6 +1250,7 @@
                     toastr.error(String(err && err.message || err), '导入失败');
                 }
             };
+            reader.onerror = () => toastr.error('无法读取备份文件', '导入失败');
             reader.readAsText(file);
         }
 
@@ -1634,11 +1294,12 @@
                 const models = profileModels(p);
                 const folded = isModelFolded(p);
                 const multi = models.length > 1;
-                const item = $('<div class="aqs-qp-item"></div>')
+                const item = $('<button type="button" class="aqs-qp-item"></button>')
                     .toggleClass('aqs-active', isActive(p))
                     .toggleClass('aqs-has-models', multi);
-                const main = $('<div class="aqs-qp-main"></div>').appendTo(item);
+                const main = $('<span class="aqs-qp-main"></span>').appendTo(item);
                 $('<span class="aqs-qp-name"></span>').text(p.name).appendTo(main);
+                if (p.favorite) $('<span class="aqs-qp-favorite" aria-hidden="true">★</span>').appendTo(item);
                 if (models.length) {
                     $('<span class="aqs-qp-model"></span>')
                         .text(multi ? (models.length + ' 个模型 · ' + modelSummary(models)) : models[0])
@@ -1647,7 +1308,7 @@
                 }
                 if (multi) {
                     $('<span class="aqs-qp-chevron"></span>').html('<i class="fa-solid ' + (folded ? 'fa-chevron-right' : 'fa-chevron-down') + '"></i>').appendTo(item);
-                    item.attr('title', '展开 / 折叠模型：' + p.name);
+                    item.attr({ title: '展开 / 折叠模型：' + p.name, 'aria-expanded': String(!folded) });
                     bindQpClick(item, async () => {
                         toggleModelFold(p);
                         if (key === 'quick') {
@@ -1664,10 +1325,10 @@
                 if (multi && !folded) {
                     const modelList = $('<div class="aqs-qp-model-list"></div>');
                     for (const m of models) {
-                        const choice = $('<div class="aqs-qp-item aqs-qp-model-choice"></div>')
+                        const choice = $('<button type="button" class="aqs-qp-item aqs-qp-model-choice"></button>')
                             .toggleClass('aqs-active', isActiveChoice(p, m))
                             .attr('title', '切换到：' + p.name + ' · ' + m);
-                        const choiceMain = $('<div class="aqs-qp-main"></div>').appendTo(choice);
+                        const choiceMain = $('<span class="aqs-qp-main"></span>').appendTo(choice);
                         $('<span class="aqs-qp-name"></span>').text(m).appendTo(choiceMain);
                         $('<span class="aqs-qp-model"></span>').text(p.name).appendTo(choiceMain);
                         bindQpClick(choice, async () => applyProfile(p, m));
@@ -1679,11 +1340,12 @@
 
             let lastGroup = null;
             sliced.items.forEach((p) => {
-                const g = p.group || '';
+                const group = p.favorite ? 'favorites' : 'group:' + (p.group || '');
+                const g = p.favorite ? '收藏' : p.group;
                 if (g) {
-                    if (g !== lastGroup) {
+                    if (group !== lastGroup) {
                         $('<div class="aqs-qp-group"></div>').text(g).appendTo($root);
-                        lastGroup = g;
+                        lastGroup = group;
                     }
                 } else {
                     lastGroup = '';
@@ -1711,13 +1373,14 @@
                 document.documentElement.appendChild(el);
             }
 
-            const { vw, vh } = viewportSize();
-            const isPhone = vw < 700;
-            const isTablet = vw >= 700 && vw < 1100;
+            const { vw, vh, x, y } = viewportSize();
+            const isPhone = vw < 640;
+            const isTablet = !isPhone && (vw < 1100 || window.matchMedia('(pointer: coarse)').matches);
             const pad = isPhone ? 8 : 12;
             const gap = 8;
 
             // 清掉 CSS 默认 bottom/left/animation/transform，避免和 top 打架、被菜单半透明层盖住
+            const font = el.style.getPropertyValue('--aqs-menu-font');
             el.style.cssText = [
                 'display:block',
                 'position:fixed',
@@ -1733,10 +1396,11 @@
                 'bottom:auto',
                 'right:auto',
             ].map((s) => s + ' !important').join(';') + ';';
+            if (font) el.style.setProperty('--aqs-menu-font', font);
 
-            const maxW = Math.min(isPhone ? Math.min(vw - pad * 2, 360) : (isTablet ? 380 : 400), vw - pad * 2);
+            const maxW = Math.max(1, Math.min(isPhone ? 360 : (isTablet ? 400 : 420), vw - pad * 2));
             const minW = Math.min(260, maxW);
-            const maxH = Math.max(160, Math.min(Math.round(vh * (isPhone ? 0.55 : 0.52)), vh - pad * 2));
+            const maxH = Math.max(1, Math.min(Math.max(190, Math.round(vh * 0.55)), vh - pad * 2));
             el.style.setProperty('width', maxW + 'px', 'important');
             el.style.setProperty('min-width', minW + 'px', 'important');
             el.style.setProperty('max-width', maxW + 'px', 'important');
@@ -1751,7 +1415,7 @@
             el.style.setProperty('top', pad + 'px', 'important');
             el.style.setProperty('left', pad + 'px', 'important');
             void el.offsetHeight;
-            const ph = Math.max(120, Math.min(el.scrollHeight || el.offsetHeight || 200, maxH));
+            const ph = Math.min(el.offsetHeight || maxH, maxH);
             const pw = el.offsetWidth || maxW;
 
             let menuRect = null;
@@ -1766,6 +1430,8 @@
                 }
             }
 
+            if (menuRect) menuRect = { width: menuRect.width, left: menuRect.left - x, right: menuRect.right - x,
+                top: menuRect.top - y, bottom: menuRect.bottom - y };
             let top;
             let left;
             if (menuRect && menuRect.width) {
@@ -1824,8 +1490,8 @@
                 }
             }
 
-            el.style.setProperty('top', Math.round(top) + 'px', 'important');
-            el.style.setProperty('left', Math.round(left) + 'px', 'important');
+            el.style.setProperty('top', Math.round(y + top) + 'px', 'important');
+            el.style.setProperty('left', Math.round(x + left) + 'px', 'important');
             el.style.setProperty('right', 'auto', 'important');
             el.style.setProperty('bottom', 'auto', 'important');
             el.setAttribute('data-aqs-qp-layout', vw + 'x' + vh + '@' + Math.round(top) + ',' + Math.round(left));
@@ -1837,6 +1503,12 @@
             // 先抬到 html 根再渲染/显示，避免第一次打开仍在 body 里被菜单层盖住
             if (panel[0].parentElement !== document.documentElement) {
                 document.documentElement.appendChild(panel[0]);
+            }
+            // The float lives outside body to avoid the drawer's clipping. Keep the host font and menu surface.
+            const menu = anchorEl?.parentElement;
+            if (menu) {
+                const style = getComputedStyle(menu);
+                panel[0].style.setProperty('--aqs-menu-font', style.fontFamily);
             }
             renderQuickPanel();
             panel.show();
@@ -1859,184 +1531,128 @@
         function closeQuickPanel() {
             const panel = $('#aqs_quick_panel');
             if (!panel.length || !panel.is(':visible')) return;
+            panel[0].style.removeProperty('display');
             panel.hide();
+        }
+
+        function addSearch(host, surface) {
+            const bar = $('<div class="aqs-search-bar"></div>');
+            if (surface === 'embed') bar.attr('id', 'aqs_embed_search');
+            if (surface === 'quick') bar.addClass('aqs-qp-search');
+            const input = $('<input class="text_pole aqs-search-input" type="search" placeholder="搜索站点…" aria-label="搜索站点" autocomplete="off">').val(searchQuery);
+            const clear = $('<button type="button" class="menu_button aqs-btn aqs-search-clear" aria-label="清除搜索"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>');
+            bar.append(input, clear);
+            host.append(bar);
+            clear.toggle(Boolean(searchQuery));
+            const update = () => {
+                const next = String(input.val() || '');
+                if (next.trim() === searchQuery) return;
+                searchQuery = next.trim();
+                settings.pages.quick = settings.pages.embed = settings.pages.list.__sites__ = settings.pages.list.__groups__ = 0;
+                for (const group of groupNames()) settings.pages.list[groupPageKey(group)] = 0;
+                for (const field of document.querySelectorAll('.aqs-search-input')) {
+                    if (field !== input[0]) field.value = searchQuery;
+                }
+                $('.aqs-search-clear').toggle(Boolean(searchQuery));
+                renderAll();
+                layoutQuickPanel(document.getElementById('aqs_wand_btn'));
+            };
+            input.on('input.aqs', (event) => { if (!event.originalEvent?.isComposing) update(); });
+            input.on('compositionend.aqs', update);
+            clear.on('click.aqs', () => { input.val(''); update(); input[0].focus({ preventScroll: true }); });
+            return bar;
         }
 
         function renderQuickPanel() {
             const panel = $('#aqs_quick_panel');
             if (!panel.length) return;
-            buildProfileItems(panel, { pageKey: 'quick' });
-            const $title = $('<div class="aqs-qp-title"></div>');
-            $title.append($('<span class="aqs-qp-title-text"><i class="fa-solid fa-shuffle"></i> API·SWITCH</span>'));
-            const $close = $('<button type="button" class="aqs-qp-close" title="关闭快切（不关魔法棒菜单）" aria-label="关闭快切"><i class="fa-solid fa-xmark"></i></button>');
-            // 必须拦截 pointerdown/mousedown：酒馆魔法棒菜单多半在 down 阶段判定「点外部」并整菜单关闭
-            $close.on('pointerdown mousedown touchstart pointerup mouseup click touchend keydown', (e) => {
-                if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Escape') return;
-                e.preventDefault();
-                e.stopPropagation();
-                if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
-                if (e.type === 'click' && $close.data('aqs-ptr-handled')) return;
-                if (e.type === 'click' || e.type === 'keydown' || e.type === 'pointerdown' || e.type === 'mousedown' || e.type === 'touchstart') {
-                    if (e.type === 'pointerdown' && e.pointerType === 'mouse' && e.button !== 0) return;
-                    if (e.type === 'mousedown' && e.button !== 0) return;
-                    if (e.type === 'pointerdown' || e.type === 'mousedown' || e.type === 'touchstart') {
-                        $close.data('aqs-ptr-handled', 1);
-                        setTimeout(() => $close.removeData('aqs-ptr-handled'), 400);
-                    }
-                    closeQuickPanel();
-                }
-            });
-            $title.append($close);
-            panel.prepend($title);
-
-            // 快捷面板搜索栏
-            const $qpSearch = $('<div class="aqs-qp-search"></div>');
-            const $qpSearchInput = $('<input class="text_pole aqs-search-input" type="text" placeholder="搜索站点…" autocomplete="off">').val(searchQuery);
-            const $qpSearchClear = $('<div class="menu_button menu_button_icon aqs-btn aqs-search-clear" title="清除搜索"><i class="fa-solid fa-xmark"></i></div>')
-                .toggle(!!searchQuery);
-            $qpSearch.append($qpSearchInput, $qpSearchClear);
-            // 拦截所有事件，防止冒泡到魔法棒菜单
-            $qpSearch.on('pointerdown mousedown touchstart pointerup mouseup click touchend', (e) => {
-                e.stopPropagation();
-            });
-            $qpSearchInput.on('input.aqs', function () {
-                searchQuery = String(this.value || '').trim();
-                $qpSearchClear.toggle(!!searchQuery);
-                // 同步设置面板搜索框
-                $('#aqs_search').val(searchQuery);
-                $('#aqs_search_clear').toggle(!!searchQuery);
-                renderQuickPanel();
-                const anchor = document.getElementById('aqs_wand_btn');
-                requestAnimationFrame(() => layoutQuickPanel(anchor));
-            });
-            $qpSearchClear.on('click.aqs', (e) => {
-                e.stopPropagation();
-                searchQuery = '';
-                $('#aqs_search').val('');
-                $('#aqs_search_clear').hide();
-                renderQuickPanel();
-                const anchor = document.getElementById('aqs_wand_btn');
-                requestAnimationFrame(() => layoutQuickPanel(anchor));
-            });
-            // 插在 title 之后、站点列表之前
-            $title.after($qpSearch);
+            if (!panel.children('.aqs-qp-title').length) {
+                const title = $('<div class="aqs-qp-title"><span class="aqs-qp-title-text"><i class="fa-solid fa-shuffle" aria-hidden="true"></i> API 快切</span></div>').appendTo(panel);
+                $('<button type="button" class="aqs-qp-close" aria-label="关闭快切"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>')
+                    .on('click', closeQuickPanel).appendTo(title);
+                addSearch(panel, 'quick');
+                const locate = $('<button type="button" class="aqs-btn aqs-qp-locate" aria-label="定位当前站点" title="定位当前站点"><i class="fa-solid fa-location-crosshairs" aria-hidden="true"></i></button>');
+                panel.children('.aqs-search-bar').append(locate);
+                locate.on('click', () => locateCurrent('quick'));
+                panel.append('<div class="aqs-quick-results"></div>');
+            }
+            panel.find('.aqs-search-input').each(function () { if (this !== document.activeElement) this.value = searchQuery; });
+            panel.find('.aqs-search-clear').toggle(Boolean(searchQuery));
+            panel.find('.aqs-qp-locate').prop('disabled', !currentProfile());
+            buildProfileItems(panel.children('.aqs-quick-results'), { pageKey: 'quick' });
         }
 
         function renderApiEmbed() {
             const body = $('#aqs_api_embed_body');
             if (!body.length) return;
+            if (!$('#aqs_embed_search').length) body.before(addSearch(body.parent(), 'embed'));
             buildProfileItems(body, { pageKey: 'embed' });
             const n = settings.profiles.filter(matchSearch).length;
             const total = settings.profiles.length;
-            if (searchQuery) {
-                $('#aqs_api_embed_count').text(n + '/' + total + ' 站');
+            $('#aqs_api_embed_locate').prop('disabled', !currentProfile());
+            $('#aqs_api_embed_count').text(searchQuery ? n + '/' + total + ' 站' : total ? total + ' 站' : '空');
+        }
+
+        function locateCurrent(surface) {
+            const profile = currentProfile();
+            if (!profile) return;
+            const input = $(surface === 'quick' ? '#aqs_quick_panel .aqs-search-input' : '#aqs_embed_search input');
+            if (!matchSearch(profile)) input.val('').trigger('input');
+            const entries = orderedProfiles().filter(matchSearch);
+            settings.pages[surface] = Math.floor(entries.indexOf(profile) / PAGE_SIZE);
+            save();
+            if (surface === 'quick') {
+                renderQuickPanel();
+                layoutQuickPanel(document.getElementById('aqs_wand_btn'));
             } else {
-                $('#aqs_api_embed_count').text(total ? (total + ' 站') : '空');
+                setEmbedCollapsed(false);
+                renderApiEmbed();
             }
-            // 插头嵌入区搜索栏
-            const embedSearchId = 'aqs_embed_search';
-            if (!$('#' + embedSearchId).length) {
-                const $searchBar = $('<div id="' + embedSearchId + '" class="aqs-search-bar"></div>');
-                const $searchInput = $('<input class="text_pole aqs-search-input" type="text" placeholder="搜索站点…" autocomplete="off">').val(searchQuery);
-                const $searchClear = $('<div class="menu_button menu_button_icon aqs-btn aqs-search-clear" title="清除搜索"><i class="fa-solid fa-xmark"></i></div>')
-                    .toggle(!!searchQuery);
-                $searchBar.append($searchInput, $searchClear);
-                $searchInput.on('input.aqs', function () {
-                    searchQuery = String(this.value || '').trim();
-                    $searchClear.toggle(!!searchQuery);
-                    // 同步设置面板搜索框
-                    $('#aqs_search').val(searchQuery);
-                    $('#aqs_search_clear').toggle(!!searchQuery);
-                    renderApiEmbed();
-                });
-                $searchClear.on('click.aqs', () => {
-                    searchQuery = '';
-                    $('#' + embedSearchId + ' .aqs-search-input').val('');
-                    $searchClear.hide();
-                    $('#aqs_search').val('');
-                    $('#aqs_search_clear').hide();
-                    renderApiEmbed();
-                });
-                body.before($searchBar);
-            } else {
-                $('#' + embedSearchId + ' .aqs-search-input').val(searchQuery);
-                $('#' + embedSearchId + ' .aqs-search-clear').toggle(!!searchQuery);
+            const box = document.querySelector(surface === 'quick' ? '#aqs_quick_panel' : '#aqs_api_embed');
+            box?.querySelector('.aqs-qp-item.aqs-active')?.scrollIntoView({ block: 'nearest' });
+        }
+
+        function setEmbedCollapsed(collapsed) {
+            $('#aqs_api_embed').toggleClass('aqs-collapsed', collapsed);
+            $('#aqs_api_embed_toggle').attr('aria-expanded', String(!collapsed)).find('i')
+                .toggleClass('fa-chevron-up', !collapsed).toggleClass('fa-chevron-down', collapsed);
+            if (settings.embedCollapsed !== collapsed) {
+                settings.embedCollapsed = collapsed;
+                save();
             }
         }
 
         function ensureApiEmbed() {
             const host = $('#rm_api_block');
             if (!host.length) return false;
-            const existing = $('#aqs_api_embed');
-            if (existing.length) {
-                if (!host[0].contains(existing[0])) {
-                    const title = host.children('h3').first();
-                    if (title.length) title.after(existing);
-                    else host.prepend(existing);
-                }
-                // 宿主重建后可能丢了 jQuery 委托外的直绑；幂等重绑
-                $('#aqs_api_embed_refresh').off('click.aqs').on('click.aqs', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    renderApiEmbed();
-                    toastr.info('已刷新站点列表', 'API 快切');
-                });
-                $('#aqs_api_embed_toggle').off('click.aqs').on('click.aqs', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const collapsed = $('#aqs_api_embed').toggleClass('aqs-collapsed').hasClass('aqs-collapsed');
-                    $('#aqs_api_embed_toggle i')
-                        .toggleClass('fa-chevron-up', !collapsed)
-                        .toggleClass('fa-chevron-down', collapsed);
-                });
-                return true;
-            }
-
+            if (host.children('#aqs_api_embed').length) return true;
             const box = $(`
                 <div id="aqs_api_embed" class="aqs-api-embed">
                     <div class="aqs-api-embed-head">
                         <div class="aqs-api-embed-title">
-                            <i class="fa-solid fa-shuffle aqs-grad-icon"></i>
-                            <span>API 快切</span>
-                            <span class="aqs-api-embed-ver">v${VERSION}</span>
+                            <i class="fa-solid fa-shuffle" aria-hidden="true"></i>
+                            <span>API 快切</span><span class="aqs-api-embed-ver">v${VERSION}</span>
                         </div>
                         <div class="aqs-api-embed-actions">
                             <span id="aqs_api_embed_count" class="aqs-chip aqs-chip-dim">空</span>
-                            <div id="aqs_api_embed_refresh" class="menu_button menu_button_icon aqs-btn" title="刷新列表">
-                                <i class="fa-solid fa-rotate"></i>
-                            </div>
-                            <div id="aqs_api_embed_toggle" class="menu_button menu_button_icon aqs-btn" title="展开/收起">
-                                <i class="fa-solid fa-chevron-up"></i>
-                            </div>
+                            <button type="button" id="aqs_api_embed_locate" class="aqs-btn" aria-label="定位当前站点" title="定位当前站点">
+                                <i class="fa-solid fa-location-crosshairs" aria-hidden="true"></i>
+                            </button>
+                            <button type="button" id="aqs_api_embed_toggle" class="aqs-btn" aria-label="展开或收起快切" aria-expanded="true">
+                                <i class="fa-solid fa-chevron-up" aria-hidden="true"></i>
+                            </button>
                         </div>
                     </div>
                     <div id="aqs_api_embed_body" class="aqs-api-embed-body"></div>
-                    <div class="aqs-api-embed-foot">
-                        <span class="aqs-note" style="margin:0">点站点即可切换 · 完整管理在「扩展」面板</span>
-                    </div>
+                    <div class="aqs-api-embed-foot"><span class="aqs-note">点站点或模型以切换 · 在「扩展」中管理站点</span></div>
                 </div>
             `);
-
-            // 插到 API 抽屉标题下方，作为主入口
             const title = host.children('h3').first();
             if (title.length) title.after(box);
             else host.prepend(box);
-
-            $('#aqs_api_embed_refresh').off('click.aqs').on('click.aqs', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                renderApiEmbed();
-                toastr.info('已刷新站点列表', 'API 快切');
-            });
-            $('#aqs_api_embed_toggle').off('click.aqs').on('click.aqs', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const collapsed = $('#aqs_api_embed').toggleClass('aqs-collapsed').hasClass('aqs-collapsed');
-                $('#aqs_api_embed_toggle i')
-                    .toggleClass('fa-chevron-up', !collapsed)
-                    .toggleClass('fa-chevron-down', collapsed);
-            });
-
+            box.find('#aqs_api_embed_locate').on('click', () => locateCurrent('embed'));
+            box.find('#aqs_api_embed_toggle').on('click', () => setEmbedCollapsed(!box.hasClass('aqs-collapsed')));
+            if (settings.embedCollapsed) setEmbedCollapsed(true);
             renderApiEmbed();
             return true;
         }
@@ -2084,25 +1700,13 @@
                 }
                 openQuickPanel(el);
             };
-            btn.on('pointerup click', function (e) {
-                // 手机端优先 pointerup；忽略后续合成 click，避免开了又关
-                if (e.type === 'click' && btn.data('aqs-ptr-handled')) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    return;
-                }
-                if (e.type === 'pointerup') {
-                    if (e.pointerType === 'mouse' && e.button !== 0) return;
-                    btn.data('aqs-ptr-handled', 1);
-                    setTimeout(() => btn.removeData('aqs-ptr-handled'), 400);
-                }
+            btn.on('click', function (e) {
                 e.preventDefault();
                 e.stopPropagation();
-                if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
                 toggleFromBtn(this);
             });
             btn.on('keydown', function (e) {
-                if (e.key !== 'Enter' && e.key !== ' ') return;
+                if (e.repeat || (e.key !== 'Enter' && e.key !== ' ')) return;
                 e.preventDefault();
                 e.stopPropagation();
                 toggleFromBtn(this);
@@ -2188,92 +1792,123 @@
             return clean + ' ' + Date.now().toString(36);
         }
 
-        let lastNativeSyncSig = '';
-        let lastNativeSyncAt = 0;
-
         function captureNativeApiSnapshot() {
-            if (!settings.autoSyncNative || applyBusy) return null;
-            if (String($('#main_api').val() || '') !== 'openai') return null;
-            if (String($('#chat_completion_source').val() || '') !== 'custom') return null;
-            const url = normUrl($('#custom_api_url_text').val());
-            if (!url || !/^https?:\/\//i.test(url)) return null;
-            return {
-                url,
-                key: String($('#api_key_custom').val() || '').trim(),
-                model: String($('#custom_model_id').val() || '').trim(),
-            };
+            const url = currentUrl();
+            if (!validApiUrl(url)) return null;
+            return { url, key: String($('#api_key_custom').val() || '').trim(), model: currentModel() };
         }
 
-        function upsertNativeProfile(snap) {
-            if (!settings.autoSyncNative || applyBusy || !snap) return false;
-            const url = normUrl(snap.url);
-            if (!url || !/^https?:\/\//i.test(url)) return false;
-            const key = String(snap.key || '').trim();
-            const models = splitModelValues(snap.model);
-            // 没有可同步的新信息时不打扰用户；Key 若已被酒馆清空，也无法安全读回明文
-            if (!key && !models.length) return false;
+        function describeNativeSync(message) {
+            $('#aqs_sync_feedback').text(message);
+        }
 
-            const sig = [url, key ? 'key' : '', models.join(',')].join('|');
-            if (sig === lastNativeSyncSig && Date.now() - lastNativeSyncAt < 5000) return false;
-            lastNativeSyncSig = sig;
-            lastNativeSyncAt = Date.now();
+        let syncSerial = 0;
+        let syncAbort;
+        function invalidateNativeSync() {
+            syncSerial++;
+            syncAbort?.abort();
+        }
 
-            let changed = false;
-            const hit = settings.profiles.find((p) => normUrl(p.url) === url);
-            if (hit) {
-                if (key && hit.key !== key) { hit.key = key; changed = true; }
-                const merged = splitModelValues(profileModels(hit), models);
-                if (merged.join('\n') !== profileModels(hit).join('\n')) {
-                    hit.models = merged;
-                    if (!hit.model) hit.model = merged[0] || '';
-                    changed = true;
-                }
-                if (changed) {
-                    save();
-                    renderAll();
-                    toastr.success('已同步原生连接到「' + hit.name + '」', 'API 快切');
-                }
-                return changed;
+        async function syncNativeProfile(snap, serial, { bindId, explicit = false } = {}) {
+            const current = () => syncSerial === serial && (explicit || settings.autoSyncNative) && !applyBusy && currentUrl() === snap.url;
+            if (!current()) return;
+            const matches = settings.profiles.filter(p => normUrl(p.url) === snap.url);
+            const exact = matches.find(p => (snap.key && p.key === snap.key) || (bindId && p.nativeKeyId === bindId));
+            const hit = exact || (matches.length === 1 ? matches[0] : null);
+            if (!hit && matches.length > 1) {
+                describeNativeSync('同一地址有多个站点，未覆盖。请在扩展中手动编辑。');
+                return;
             }
-
-            const name = uniqueProfileName(profileNameFromUrl(url));
-            settings.profiles.push({
-                id: uid(),
-                name,
-                url,
-                key,
-                model: models[0] || '',
-                models,
-                group: '',
-            });
+            let entries;
+            if (!snap.key && !bindId) {
+                try { entries = await readCustomSecrets(); } catch { /* unknown: do not guess */ }
+            }
+            if (!current()) return;
+            const nativeKeyId = bindId || (!snap.key ? hit?.nativeKeyId : '') || '';
+            const key = bindId ? '' : snap.key || hit?.key || '';
+            const needsKey = !key && !nativeKeyId && (hit?.needsKey || !entries || entries.some(item => item.active));
+            const profile = hit || { id: uid(), url: snap.url, name: uniqueProfileName(profileNameFromUrl(snap.url)), group: '', model: '', models: [] };
+            Object.assign(profile, { key, nativeKeyId, needsKey: Boolean(needsKey) });
+            if (!hit) settings.profiles.push(profile);
+            activeProfileId = profile.id;
             save();
             renderAll();
-            toastr.success('已从原生 API 面板同步「' + name + '」', 'API 快切');
-            return true;
+            // Save credentials separately; failing to enumerate models must not lose a confirmed key.
+            let suffix = snap.model ? '未验证模型，未自动添加。' : '未选择模型。';
+            if (snap.model && !needsKey) {
+                const controller = syncAbort = new AbortController();
+                describeNativeSync('已保存配置，正在核对本站模型…');
+                try {
+                    const available = await fetchModelList(snap.url, key, controller.signal, { nativeKeyId, exact: true });
+                    if (!current() || !settings.profiles.includes(profile) || normUrl(profile.url) !== snap.url) return;
+                    if (available.includes(snap.model)) {
+                        const models = splitModelValues(profileModels(profile), [snap.model]);
+                        profile.model = models[0] || '';
+                        profile.models = models;
+                        save();
+                        renderAll();
+                        suffix = '模型已核对。';
+                    } else suffix = '本站没有所填模型，未自动添加。';
+                } catch {
+                    if (!current()) return;
+                    suffix = '未能核对本站模型；可在站点卡片手动获取或填写。';
+                }
+            }
+            const credential = key || nativeKeyId ? '密钥已关联。' : needsKey ? '请绑定原生密钥或在快切中补填。' : '';
+            const message = '已同步「' + profile.name + '」。' + credential + suffix;
+            describeNativeSync(message);
+            toastr.info(message, 'API 快切');
+        }
+
+        async function bindCurrentNativeKey() {
+            if (!TT || applyBusy) return;
+            const snap = captureNativeApiSnapshot();
+            if (!snap || snap.key) { toastr.warning('请先在 TT 原生面板保存或选中密钥，再绑定到快切'); return; }
+            try {
+                const active = (await readCustomSecrets()).find(entry => entry.active);
+                if (!active?.id || isPluginSecret(active)) {
+                    toastr.warning('请先在原生密钥列表选中该站点自己的已保存密钥');
+                    return;
+                }
+                if (currentUrl() !== snap.url || !confirm('确认把 TT 当前选中的密钥绑定到此地址？\n' + snap.url)) return;
+                invalidateNativeSync();
+                await syncNativeProfile(snap, syncSerial, { bindId: active.id, explicit: true });
+            } catch { toastr.warning('无法读取 TT 密钥状态，未执行绑定'); }
         }
 
         function bindNativeSync() {
-            $(document).off('pointerdown.aqs_native_sync mousedown.aqs_native_sync touchstart.aqs_native_sync click.aqs_native_sync', '#api_button_openai');
-            $(document).on('pointerdown.aqs_native_sync mousedown.aqs_native_sync touchstart.aqs_native_sync', '#api_button_openai', function () {
+            const { SECRET_WRITTEN } = ctx.eventTypes || {};
+            const observesWrites = Boolean(SECRET_WRITTEN && ctx.eventSource?.on);
+            let pending = null;
+            let expiry;
+            const clear = () => { clearTimeout(expiry); pending = null; };
+            const run = (snap, serial) => syncNativeProfile(snap, serial).catch(() => describeNativeSync('未能同步这次连接，请重试。'));
+            if (observesWrites) ctx.eventSource.on(SECRET_WRITTEN, (key) => {
+                if (key !== SECRET_KEY_CUSTOM || !pending) return;
+                const { snap, serial } = pending;
+                clear();
+                void run(snap, serial);
+            });
+            document.addEventListener('click', (event) => {
+                if (!event.target.closest?.('#api_button_openai') || applyBusy || !settings.autoSyncNative) return;
                 const snap = captureNativeApiSnapshot();
-                if (snap) $(this).data('aqs-native-snap', snap);
-            });
-            $(document).on('click.aqs_native_sync', '#api_button_openai', function () {
-                if (!settings.autoSyncNative || applyBusy) return;
-                const snap = $(this).data('aqs-native-snap') || captureNativeApiSnapshot();
-                $(this).removeData('aqs-native-snap');
+                clear();
+                invalidateNativeSync();
+                const serial = syncSerial;
                 if (!snap) return;
-                // 等 ST 自己完成连接 / 清空可见 Key 后再合并；再次确认当前 URL 没变，避免误同步旧输入
-                setTimeout(() => {
-                    try {
-                        if (applyBusy) return;
-                        if (normUrl($('#custom_api_url_text').val()) !== snap.url) return;
-                        upsertNativeProfile(snap);
-                    } catch (e) {
-                        console.warn('[API快切] 原生同步失败', e);
-                    }
-                }, 1800);
-            });
+                if (snap.key && observesWrites) {
+                    pending = { snap, serial };
+                    describeNativeSync('等待酒馆保存新密钥…');
+                    expiry = setTimeout(() => {
+                        clear();
+                        if (serial === syncSerial) describeNativeSync('未收到密钥保存确认。若密钥已存在，请使用「绑定 TT 当前密钥」。');
+                    }, 10000);
+                } else queueMicrotask(() => run(snap, serial));
+            }, true);
+            const invalidate = () => { clear(); invalidateNativeSync(); };
+            ctx.eventSource?.on?.(ctx.eventTypes?.CHATCOMPLETION_SOURCE_CHANGED || 'chatcompletion_source_changed', invalidate);
+            $(document).on('input.aqsSync', '#custom_api_url_text', invalidate);
+            $(document).on('input.aqsSync', '#api_key_custom', function () { if (this.value) invalidate(); });
         }
 
         function watchUiHosts() {
@@ -2299,6 +1934,7 @@
                     moTimer = setTimeout(() => {
                         moTimer = null;
                         ensureFloatingPanel();
+                        ensureSettings();
                         injectWand();
                         ensureApiEmbed();
                     }, 180);
@@ -2308,7 +1944,7 @@
             }
 
             // 打开 API 抽屉时强制刷新嵌入列表
-            $(document).off('click.aqs_api_drawer').on('click.aqs_api_drawer', '#API-status-top, #sys-settings-button .drawer-toggle, #rm_api_block, #api_button_openai', () => {
+            $(document).off('click.aqs_api_drawer').on('click.aqs_api_drawer', '#API-status-top, #sys-settings-button .drawer-toggle', () => {
                 setTimeout(() => {
                     ensureApiEmbed();
                     renderApiEmbed();
@@ -2333,9 +1969,7 @@
                 </div>
                 <div class="inline-drawer-content">
                   <div class="aqs-sys-bar">
-                    <span class="aqs-sys-id">API·SWITCH</span>
                     <span class="aqs-sys-ver">v${VERSION}</span>
-                    <span class="aqs-blink">_</span>
                     <span class="aqs-sys-spacer"></span>
                     <div id="aqs_update_btn" class="menu_button menu_button_icon aqs-btn" title="检查 / 安装更新">
                       <i class="fa-solid fa-satellite-dish"></i> 检查更新
@@ -2344,38 +1978,42 @@
                   <hr class="aqs-hr">
                   <div id="aqs_profile_list"></div>
                   <hr class="aqs-hr">
-                  <div class="aqs-form-title" id="aqs_form_title">新增站点</div>
-                  <input id="aqs_name" class="text_pole" type="text" placeholder="名称（如：OpenRouter）" autocomplete="off">
-                  <input id="aqs_url" class="text_pole" type="text" placeholder="API URL（https://.../v1）" autocomplete="off">
-                  <input id="aqs_key" class="text_pole" type="password" placeholder="API Key" autocomplete="off">
-                  <div class="aqs-model-row">
-                    <textarea id="aqs_model" class="text_pole" rows="2" placeholder="模型 ID（可多个：换行 / 逗号分隔，首个为默认）" autocomplete="off"></textarea>
-                    <div id="aqs_fetch_models" class="menu_button menu_button_icon aqs-btn" title="从接口拉取模型列表">
-                      <i class="fa-solid fa-list"></i> 获取模型
+                  <section class="aqs-form-card" aria-labelledby="aqs_form_title">
+                    <div class="aqs-form-header">
+                      <h4 class="aqs-form-title" id="aqs_form_title">新增站点</h4>
+                      <button type="button" id="aqs_fill_current" class="aqs-btn">用当前连接填入</button>
                     </div>
-                  </div>
-                  <div class="aqs-field-label">分组</div>
-                  <div id="aqs_group_picker"></div>
-                  <input id="aqs_group" class="text_pole" type="text" placeholder="输入新分组名" autocomplete="off" style="display:none;">
-                  <div class="aqs-form-btns">
-                    <div id="aqs_save" class="menu_button menu_button_icon aqs-btn aqs-btn-primary">
-                      <i class="fa-solid fa-plus"></i> 保存站点
+                    <div class="aqs-form-grid">
+                      <label class="aqs-field aqs-field-wide"><span>API 地址</span><input id="aqs_url" class="text_pole" type="text" inputmode="url" placeholder="https://example.com/v1" autocomplete="off" spellcheck="false" required></label>
+                      <label class="aqs-field"><span>站点名称 <small>可选</small></span><input id="aqs_name" class="text_pole" type="text" placeholder="留空则用域名" autocomplete="off"></label>
+                      <div class="aqs-field"><label for="aqs_key">API Key <small>按站点要求填写</small></label>
+                        <div class="aqs-input-action"><input id="aqs_key" class="text_pole" type="password" placeholder="输入站点密钥" autocomplete="off" data-tt-sensitive><button type="button" id="aqs_key_toggle" class="aqs-btn" aria-label="显示或隐藏 API Key" aria-pressed="false">显示</button></div>
+                      </div>
+                      <div class="aqs-field aqs-field-wide">
+                        <div class="aqs-field-header"><label for="aqs_model">模型 ID <small>首个为默认</small></label><button type="button" id="aqs_fetch_models" class="aqs-btn"><i class="fa-solid fa-list" aria-hidden="true"></i> 获取模型</button></div>
+                        <textarea id="aqs_model" class="text_pole" rows="2" placeholder="可填写多个，用换行或逗号分隔" autocomplete="off" spellcheck="false"></textarea>
+                      </div>
                     </div>
-                    <div id="aqs_cancel_edit" class="menu_button menu_button_icon aqs-btn" style="display:none;">
-                      取消编辑
+                    <div class="aqs-field-label">分组 · 可选</div>
+                    <div id="aqs_group_picker"></div>
+                    <input id="aqs_group" class="text_pole" type="text" aria-label="新分组名称" placeholder="输入新分组名" autocomplete="off" style="display:none;">
+                    <p id="aqs_form_hint" class="aqs-note" role="status"></p>
+                    <div class="aqs-form-btns">
+                      <button type="button" id="aqs_save" class="aqs-btn aqs-btn-primary"><i class="fa-solid fa-plus" aria-hidden="true"></i> 保存站点</button>
+                      <button type="button" id="aqs_save_use" class="aqs-btn">保存并切换</button>
+                      <button type="button" id="aqs_cancel_edit" class="aqs-btn" style="display:none;">取消编辑</button>
                     </div>
-                  </div>
-                  <label class="aqs-check-row" title="在酒馆原生 API 面板填写 URL / Key / 模型并点 Connect 后，自动保存到 API 快切">
+                  </section>
+                  <label class="aqs-check-row">
                     <input id="aqs_auto_sync_native" type="checkbox">
-                    <span>原生 API 连接后自动同步到快切</span>
+                    <span>点酒馆的「连接」时自动同步自定义站点</span>
                   </label>
+                  <button type="button" id="aqs_bind_native_key" class="aqs-btn" hidden>绑定 TT 当前密钥</button>
+                  <span id="aqs_sync_feedback" class="aqs-note" role="status"></span>
                   <div class="aqs-io-btns">
-                    <div id="aqs_export" class="menu_button menu_button_icon aqs-btn">
-                      <i class="fa-solid fa-file-export"></i> 导出
-                    </div>
-                    <div id="aqs_import" class="menu_button menu_button_icon aqs-btn">
-                      <i class="fa-solid fa-file-import"></i> 导入
-                    </div>
+                    <button type="button" id="aqs_export" class="menu_button aqs-btn">导出配置</button>
+                    <button type="button" id="aqs_export_full" class="menu_button aqs-btn" title="包含明文 API Key">完整备份</button>
+                    <button type="button" id="aqs_import" class="menu_button aqs-btn">导入</button>
                     <input id="aqs_import_file" type="file" accept="application/json,.json" style="display:none;">
                   </div>
                   <span class="aqs-note">
@@ -2389,43 +2027,68 @@
 
         ctx.extensionSettings[MODULE] = settings;
         const $settingsHost = () => ($('#extensions_settings2').length ? $('#extensions_settings2') : $('#extensions_settings'));
-        const container = $settingsHost();
-        if (container.length) {
-            // 插到扩展设置顶部，与其他插件一致使用 inline-drawer 可整块收起
-            if (!$('.aqs-settings').length) container.prepend(html);
-        } else {
-            // 某些移动端壳子设置面板晚挂载
-            const waitSettings = setInterval(() => {
-                const c = $settingsHost();
-                if (!c.length) return;
-                clearInterval(waitSettings);
-                if (!$('.aqs-settings').length) c.prepend(html);
+        function ensureSettings() {
+            const container = $settingsHost();
+            if (!container.length) return;
+            // TT 可把抽屉暂时停放在离线 DOM 中，复用原表单避免重复 ID 和丢失草稿。
+            if (!settingsPanel) {
+                settingsPanel = $(html);
+                container.prepend(settingsPanel);
                 bindSettingsUi();
                 renderList();
-            }, 400);
-            setTimeout(() => clearInterval(waitSettings), 20000);
+            } else if (!container[0].contains(settingsPanel[0])) {
+                container.prepend(settingsPanel);
+                renderList();
+            }
         }
+        let settingsPanel;
 
         function bindSettingsUi() {
-            $('#aqs_save').off('click.aqs').on('click.aqs', onSave);
+            $('#aqs_bind_native_key').prop('hidden', !TT).on('click.aqs', bindCurrentNativeKey);
+            $('#aqs_save').on('click.aqs', () => onSave(false));
+            $('#aqs_save_use').on('click.aqs', () => onSave(true));
+            $('#aqs_url').on('input.aqs', () => $('#aqs_form_hint').text(''));
+            $('#aqs_key_toggle').on('click.aqs', function () {
+                const field = $('#aqs_key');
+                const visible = field.attr('type') === 'password';
+                field.attr('type', visible ? 'text' : 'password');
+                $(this).attr('aria-pressed', String(visible)).text(visible ? '隐藏' : '显示');
+            });
+            $('#aqs_fill_current').on('click.aqs', () => {
+                const snap = captureNativeApiSnapshot();
+                if (!snap) { $('#aqs_form_hint').text('酒馆当前不是 OpenAI 兼容自定义连接，或未填写地址。'); return; }
+                const formAddress = formUrl();
+                if (formAddress && formAddress !== snap.url) {
+                    $('#aqs_form_hint').text('未覆盖不同地址的草稿；请先清空地址再填入。');
+                    return;
+                }
+                $('#aqs_url').val(snap.url);
+                if (!$('#aqs_model').val() && snap.model) $('#aqs_model').val(snap.model);
+                $('#aqs_form_hint').text('已填入当前地址和模型，API Key 不会从酒馆密钥库复制。');
+            });
             $('#aqs_cancel_edit').off('click.aqs').on('click.aqs', resetForm);
-            $('#aqs_export').off('click.aqs').on('click.aqs', exportProfiles);
+            $('#aqs_export').off('click.aqs').on('click.aqs', () => exportProfiles());
+            $('#aqs_export_full').off('click.aqs').on('click.aqs', () => exportProfiles(true));
             $('#aqs_import').off('click.aqs').on('click.aqs', () => $('#aqs_import_file').trigger('click'));
             $('#aqs_import_file').off('change.aqs').on('change.aqs', function () {
                 if (this.files && this.files[0]) importProfiles(this.files[0]);
                 this.value = '';
             });
             $('#aqs_fetch_models').off('click.aqs').on('click.aqs', () => {
-                openModelPicker($('#aqs_url').val(), $('#aqs_key').val(), (m) => {
+                const url = formUrl();
+                const editing = settings.profiles.find(p => p.id === editingId && normUrl(p.url) === url);
+                openModelPicker(url, $('#aqs_key').val(), (m) => {
                     const list = appendModelToInput('#aqs_model', m);
                     toastr.success('已加入：' + m + (list.length > 1 ? '（共 ' + list.length + ' 个模型）' : ''), 'API 快切');
-                });
+                }, $('#aqs_key').val() ? undefined : editing?.nativeKeyId);
             });
             $('#aqs_auto_sync_native')
                 .prop('checked', !!settings.autoSyncNative)
                 .off('change.aqs')
                 .on('change.aqs', function () {
                     settings.autoSyncNative = !!this.checked;
+                    invalidateNativeSync();
+                    describeNativeSync(this.checked ? '' : '已关闭自动同步。');
                     save();
                 });
             $('#aqs_update_btn').off('click.aqs').on('click.aqs', async () => {
@@ -2435,8 +2098,7 @@
                 else await checkUpdate(false);
             });
         }
-        bindSettingsUi();
-
+        ensureSettings();
 
         // 初始化 UI 宿主（魔法棒 / 插头嵌入 / 浮层）
         bindNativeSync();

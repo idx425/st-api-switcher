@@ -77,9 +77,9 @@
 }
 :is(.aqs-settings, #aqs_api_embed, #aqs_quick_panel, #aqs_model_modal) :is(.aqs-btn, .aqs-gchip, .aqs-qp-item, .aqs-modal-item):hover { background: var(--aqs-hover); }
 :is(.aqs-settings, #aqs_api_embed, #aqs_quick_panel, #aqs_model_modal) :is(.aqs-btn-primary, .aqs-gchip-on, .aqs-active:is(button), .aqs-update-avail) { background: var(--aqs-selected); border-color: var(--aqs-accent); }
-:is(.aqs-settings, #aqs_api_embed, #aqs_quick_panel, #aqs_model_modal) :is(button, input, textarea, [tabindex]):focus-visible { outline: 2px solid var(--aqs-accent); outline-offset: -2px; }
+:is(.aqs-settings, #aqs_api_embed, #aqs_quick_panel, #aqs_model_modal) :is(button, input, textarea, select, [tabindex]):focus-visible { outline: 2px solid var(--aqs-accent); outline-offset: -2px; }
 :is(.aqs-settings, #aqs_api_embed, #aqs_quick_panel, #aqs_model_modal) button:disabled { cursor: default; opacity: .5; }
-:is(.aqs-settings, #aqs_api_embed, #aqs_quick_panel, #aqs_model_modal) :is(input.text_pole, textarea.text_pole) {
+:is(.aqs-settings, #aqs_api_embed, #aqs_quick_panel, #aqs_model_modal) :is(input.text_pole, textarea.text_pole, select.text_pole) {
     color: var(--aqs-text);
     background: var(--aqs-hover);
     border: 1px solid var(--aqs-border);
@@ -105,7 +105,7 @@
 }
 .aqs-api-embed-head, .aqs-qp-title, #aqs_model_modal .aqs-modal-head { justify-content: space-between; }
 .aqs-api-embed-foot, #aqs_api_embed .aqs-search-bar { margin-top: 8px; }
-#aqs_api_embed.aqs-collapsed :is(.aqs-search-bar, .aqs-api-embed-body, .aqs-api-embed-foot) { display: none; }
+#aqs_api_embed.aqs-collapsed :is(.aqs-search-bar, .aqs-qp-filters, .aqs-api-embed-body, .aqs-api-embed-foot) { display: none; }
 #aqs_model_modal .aqs-modal-box {
     background: var(--aqs-base);
     background: linear-gradient(var(--aqs-bg), var(--aqs-bg)), var(--aqs-base);
@@ -168,7 +168,7 @@
 @media (max-width: 480px) { .aqs-model-row { flex-wrap: wrap; } }
 @media (pointer: coarse) {
     :is(.aqs-settings, #aqs_api_embed, #aqs_quick_panel, #aqs_model_modal) :is(.aqs-btn, .aqs-gchip, .aqs-qp-close, .aqs-modal-close, .aqs-qp-item, .aqs-modal-item, input.text_pole) { min-height: 44px; }
-    :is(.aqs-settings, #aqs_api_embed, #aqs_quick_panel, #aqs_model_modal) :is(input.text_pole, textarea.text_pole) { font-size: max(16px, 1em); }
+    :is(.aqs-settings, #aqs_api_embed, #aqs_quick_panel, #aqs_model_modal) :is(input.text_pole, textarea.text_pole, select.text_pole) { font-size: max(16px, 1em); }
     #aqs_model_modal .aqs-modal-close, #aqs_quick_panel .aqs-qp-close { min-width: 44px; }
 }
 @media (prefers-reduced-motion: reduce) { .aqs-group-chevron { transition: none; } }
@@ -267,3 +267,30 @@
     border-radius: 8px;
 }
 #aqs_native_key_picker select { display: block; width: 100%; box-sizing: border-box; margin-block-start: 4px; }
+
+/* v4.2 shared quick filters and status chips */
+.aqs-qp-filters {
+    display: flex;
+    gap: 5px;
+    padding: 6px 0 2px;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+.aqs-qp-filters::-webkit-scrollbar { display: none; }
+:is(#aqs_quick_panel, #aqs_api_embed) .aqs-qp-filters .aqs-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    padding: 5px 8px;
+    min-height: 34px;
+}
+:is(#aqs_quick_panel, #aqs_api_embed) .aqs-qp-filter[aria-pressed="true"] {
+    background: var(--aqs-selected);
+    border-color: var(--aqs-accent);
+}
+.aqs-previous { margin-inline-start: auto; }
+.aqs-chip-check { border-color: var(--aqs-border); }
+.aqs-settings select.text_pole option { color: var(--aqs-text); background: var(--aqs-base); }
+@media (pointer: coarse) {
+    :is(#aqs_quick_panel, #aqs_api_embed) .aqs-qp-filters .aqs-btn,
+    .aqs-settings select.text_pole { min-height: 44px; }
+}

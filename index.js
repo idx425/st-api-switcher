@@ -9,9 +9,20 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '4.1.1';
+    const VERSION = '4.2.0';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    // Keep these values aligned with TauriTavern's custom API format selector.
+    const CUSTOM_FORMATS = Object.freeze([
+        { value: 'openai_compat', source: 'custom', label: 'OpenAI Chat Completions' },
+        { value: 'openai_responses', source: 'custom_openai_responses', label: 'OpenAI Responses' },
+        { value: 'claude_messages', source: 'custom_claude_messages', label: 'Claude Messages' },
+        { value: 'gemini_generate_content', source: 'custom_gemini_generate_content', label: 'Gemini Generate Content' },
+        { value: 'gemini_interactions', source: 'custom_gemini_interactions', label: 'Gemini Interactions' },
+    ]);
+    const DEFAULT_CUSTOM_FORMAT = CUSTOM_FORMATS[0].value;
+    const formatInfo = (value) => CUSTOM_FORMATS.find((item) => item.value === value) || CUSTOM_FORMATS[0];
 
     function getCtx() {
         try {
@@ -65,6 +76,9 @@
         if (!settings.pages.list || typeof settings.pages.list !== 'object') settings.pages.list = {};
         if (typeof settings.pages.embed !== 'number' || settings.pages.embed < 0) settings.pages.embed = 0;
         if (typeof settings.pages.quick !== 'number' || settings.pages.quick < 0) settings.pages.quick = 0;
+        if (!Array.isArray(settings.recentProfiles)) settings.recentProfiles = [];
+        settings.recentProfiles = uniqStrings(settings.recentProfiles);
+        if (!['all', 'recent', 'favorites'].includes(settings.quickFilter)) settings.quickFilter = 'all';
         // 清洗脏数据：保证每条站点字段类型稳定；仅在实际改动时落盘
         const rawProfiles = Array.isArray(settings.profiles) ? settings.profiles : [];
         const cleanProfiles = rawProfiles
@@ -83,6 +97,12 @@
                     favorite: p.favorite === true,
                     needsKey: p.needsKey === true,
                     nativeKeyId: typeof p.nativeKeyId === 'string' ? p.nativeKeyId : '',
+                    apiFormat: formatInfo(p.apiFormat).value,
+                    lastCheck: p.lastCheck && typeof p.lastCheck === 'object' ? {
+                        ok: p.lastCheck.ok === true,
+                        at: Number(p.lastCheck.at) || 0,
+                        count: Math.max(0, Math.floor(Number(p.lastCheck.count) || 0)),
+                    } : null,
                 };
             });
         const dirty = rawProfiles.length !== cleanProfiles.length || rawProfiles.some((p, i) => {
@@ -90,7 +110,8 @@
             if (!p || !c) return true;
             return p.id !== c.id || String(p.name || '') !== c.name || String(p.url || '').replace(/\/+$/, '') !== c.url
                 || String(p.key || '') !== c.key || splitModelValues(p.model, p.models).join('\n') !== c.models.join('\n')
-                || String(p.group || '').trim() !== c.group;
+                || String(p.group || '').trim() !== c.group
+                || p.apiFormat !== c.apiFormat;
         });
         settings.profiles = cleanProfiles;
         if (dirty) {
@@ -109,19 +130,30 @@
                     && !url.username && !url.password && !url.search && !url.hash;
             } catch { return false; }
         }
+        const currentFormat = () => {
+            const host = getCtx()?.chatCompletionSettings;
+            const selection = $('#chat_completion_source').val();
+            if (selection != null) return CUSTOM_FORMATS.find((item) => item.source === selection)?.value || DEFAULT_CUSTOM_FORMAT;
+            return host?.chat_completion_source === 'custom' ? formatInfo(host.custom_api_format).value : DEFAULT_CUSTOM_FORMAT;
+        };
         const currentUrl = () => {
             const host = getCtx();
-            const source = $('#chat_completion_source').val() ?? host?.chatCompletionSettings?.chat_completion_source;
-            const format = host?.chatCompletionSettings?.custom_api_format;
+            const selection = $('#chat_completion_source').val();
+            const custom = selection != null ? CUSTOM_FORMATS.some((item) => item.source === selection)
+                : host?.chatCompletionSettings?.chat_completion_source === 'custom';
             const api = $('#main_api').val() ?? host?.mainApi;
-            return api === 'openai' && source === 'custom' && (!format || format === 'openai_compat')
+            return api === 'openai' && custom
                 ? normUrl($('#custom_api_url_text').val() ?? host?.chatCompletionSettings?.custom_url) : '';
         };
+        const sameConnection = (a, b) => normUrl(a.url) === normUrl(b.url)
+            && String(a.key || '') === String(b.key || '')
+            && String(a.nativeKeyId || '') === String(b.nativeKeyId || '')
+            && formatInfo(a.apiFormat).value === formatInfo(b.apiFormat).value;
         const currentModel = () => String($('#custom_model_id').val() ?? getCtx()?.chatCompletionSettings?.custom_model ?? '').trim();
         function currentProfile() {
             const url = currentUrl();
             if (!url) return null;
-            const matches = settings.profiles.filter(p => normUrl(p.url) === url);
+            const matches = settings.profiles.filter(p => normUrl(p.url) === url && formatInfo(p.apiFormat).value === currentFormat());
             if (matches.length === 1) return matches[0];
             const known = matches.find(p => p.id === activeProfileId);
             if (known) return known;
@@ -131,6 +163,26 @@
         }
         let activeProfileId = null;
         const isActive = (p) => currentProfile()?.id === p.id;
+        function profileFilterList() {
+            const byId = new Map(settings.profiles.map((p) => [p.id, p]));
+            if (settings.quickFilter === 'favorites') return orderedProfiles().filter((p) => p.favorite);
+            if (settings.quickFilter === 'recent') return settings.recentProfiles.map((id) => byId.get(id)).filter(Boolean);
+            return orderedProfiles();
+        }
+
+        function previousProfile() {
+            const active = currentProfile();
+            return settings.recentProfiles.map((id) => settings.profiles.find((p) => p.id === id))
+                .find((p) => p && p.id !== active?.id);
+        }
+
+        function rememberRecent(p, previous) {
+            if (!p?.id) return;
+            const ids = [p.id, ...(previous && previous.id !== p.id ? [previous.id] : []), ...settings.recentProfiles];
+            settings.recentProfiles = uniqStrings(ids).slice(0, 12);
+            save();
+        }
+
         const profileModels = (p) => splitModelValues(p && p.model, p && p.models);
         const matchSearch = (p) => {
             if (!searchQuery) return true;
@@ -243,14 +295,16 @@
             applyBusy = true;
             invalidateNativeSync();
             try {
+                const previous = currentProfile();
                 const url = normUrl(p.url);
                 const key = String(p.key || '');
                 if (p.needsKey && !key && !p.nativeKeyId) throw new Error('此站点缺少 API Key，请在扩展设置中编辑并补填');
                 if (!validApiUrl(url)) throw new Error('请填写有效的 HTTP(S) API 基础地址');
 
+                const targetFormat = formatInfo(p.apiFormat);
                 const controls = '#main_api, #chat_completion_source, #custom_api_url_text, #custom_model_id, #api_key_custom, #api_button_openai';
                 const getControls = () => Object.fromEntries([...document.querySelectorAll(controls)].map((el) => [el.id, el]));
-                const ready = (fields) => fields.main_api?.value === 'openai' && fields.chat_completion_source?.value === 'custom'
+                const ready = (fields) => fields.main_api?.value === 'openai' && fields.chat_completion_source?.value === targetFormat.source
                     && fields.custom_api_url_text && fields.custom_model_id && fields.api_key_custom && fields.api_button_openai;
                 const targetModel = String(modelOverride !== undefined ? modelOverride : (p.model || '')).trim();
                 const configure = async () => {
@@ -258,7 +312,11 @@
                     if (!main.length) throw new Error('请先打开 API 连接抽屉');
                     setSelectValueIfNeeded('#main_api', 'openai');
                     const source = await waitForElement('#chat_completion_source');
-                    if (source.length) setSelectValueIfNeeded('#chat_completion_source', 'custom');
+                    if (!source.find('option').toArray().some((option) => option.value === targetFormat.source)) {
+                        throw new Error('此酒馆版本不支持 ' + targetFormat.label + '，请更新酒馆或选择支持的格式');
+                    }
+                    // TT exposes formats as source options; the backend settings still use source=custom.
+                    setSelectValueIfNeeded('#chat_completion_source', targetFormat.source);
                     await waitForElement('#custom_api_url_text');
                     if (!ready(getControls())) throw new Error('自定义连接面板尚未就绪，请打开 API 连接抽屉重试');
                     if (!key && p.nativeKeyId) {
@@ -289,6 +347,7 @@
                 if (!connect.isConnected) throw new Error('连接面板已关闭，请打开后重试');
                 activeProfileId = p.id;
                 connect.click();
+                rememberRecent(p, previous);
                 toastr.info('已提交「' + p.name + '」，请查看酒馆连接状态', 'API 快切');
                 renderAll();
                 // Connect 异步改 DOM 后补刷一次高亮
@@ -544,26 +603,27 @@
             return s;
         }
 
-        async function fetchModelList(url, key, signal, { nativeKeyId, exact = false } = {}) {
+        async function fetchModelList(url, key, signal, { nativeKeyId, exact = false, apiFormat = DEFAULT_CUSTOM_FORMAT } = {}) {
             if (!validApiUrl(url)) throw new Error('请填写有效的 HTTP(S) API 基础地址');
             const useKey = String(key || '').trim();
-            if (TT && !useKey && !nativeKeyId && (await readCustomSecrets()).length) {
-                throw new Error('酒馆保存了自定义密钥。请填写此站点自己的 Key，避免获取模型时使用其他站点的密钥。');
-            }
+            const format = formatInfo(apiFormat).value;
+            if (!TT && format !== DEFAULT_CUSTOM_FORMAT) throw new Error('此格式的模型列表需要新版 TT 支持，也可手动填写模型 ID');
             let lastError;
-            for (const base of exact ? [url] : candidateUrls(url)) {
+            const bases = exact || format.startsWith('gemini_') ? [url] : candidateUrls(url);
+            for (const base of bases) {
                 if (signal?.aborted) throw signal.reason;
                 try {
-                    // TT 保持桌面/移动端的端点信任检查，通过请求头指定当前站点的 Key。
                     const target = TT ? '/api/backends/chat-completions/status' : base + '/models';
                     const authorization = useKey ? 'Bearer ' + useKey : '';
                     const options = TT ? {
                         method: 'POST',
                         headers: ctx.getRequestHeaders(),
                         body: JSON.stringify({
-                            chat_completion_source: 'custom', custom_url: base, custom_api_format: 'openai_compat',
-                            ...(nativeKeyId ? { secret_id: nativeKeyId } : {}),
-                            ...(authorization ? { custom_include_headers: { Authorization: authorization } } : {}),
+                            chat_completion_source: 'custom', custom_api_format: format,
+                            // TT's explicit proxy credentials avoid reading the active site's secret.
+                            // Native adapters then apply the selected protocol's authentication and trust checks.
+                            ...(!useKey && nativeKeyId ? { custom_url: base, secret_id: nativeKeyId }
+                                : { custom_url: '', reverse_proxy: base, proxy_password: useKey }),
                         }),
                     } : {
                         method: 'GET', headers: { Accept: 'application/json', ...(authorization ? { Authorization: authorization } : {}) },
@@ -605,7 +665,7 @@
 
         let closeModelPicker;
 
-        function openModelPicker(url, key, onPick, nativeKeyId) {
+        function openModelPicker(url, key, onPick, nativeKeyId, apiFormat = DEFAULT_CUSTOM_FORMAT) {
             url = normUrl(url);
             if (!validApiUrl(url)) { toastr.warning('请填写有效的 HTTP(S) API 基础地址'); return; }
 
@@ -694,7 +754,7 @@
             };
 
             const doFetch = () => {
-                fetchModelList(url, key, request.signal, { nativeKeyId })
+                fetchModelList(url, key, request.signal, { nativeKeyId, apiFormat })
                     .then((models) => {
                         if (isClosed) return;
                         const render = (filter) => {
@@ -832,6 +892,47 @@
             return models[0] + ' +' + (models.length - 1);
         }
 
+        const profileChecks = new Map();
+        function invalidateProfileCheck(p) {
+            profileChecks.get(p.id)?.abort();
+            profileChecks.delete(p.id);
+            p.lastCheck = null;
+        }
+
+        async function checkProfile(p) {
+            if (!p || profileChecks.has(p.id)) return;
+            const controller = new AbortController();
+            const snapshot = { ...p };
+            const current = () => !controller.signal.aborted && settings.profiles.includes(p) && sameConnection(p, snapshot);
+            profileChecks.set(p.id, controller);
+            renderAll();
+            try {
+                if (p.needsKey && !p.key && !p.nativeKeyId) throw new Error('此站点缺少密钥，请绑定或补填后重试');
+                const models = await fetchModelList(snapshot.url, snapshot.key, controller.signal, {
+                    nativeKeyId: snapshot.nativeKeyId, apiFormat: snapshot.apiFormat, exact: true,
+                });
+                if (!current()) return;
+                p.lastCheck = { ok: true, at: Date.now(), count: models.length };
+                save();
+                toastr.success('「' + p.name + '」模型列表可读取，共 ' + models.length + ' 个；聊天是否可用请在酒馆验证。', '模型列表检查');
+            } catch (error) {
+                if (!current()) return;
+                // Persist only bounded status facts; upstream error text can contain credentials.
+                p.lastCheck = { ok: false, at: Date.now(), count: 0 };
+                save();
+                toastr.error(humanizeFetchErr(error?.message || error), '模型列表检查失败');
+            } finally {
+                if (profileChecks.get(p.id) === controller) profileChecks.delete(p.id);
+                renderAll();
+            }
+        }
+
+        function checkLabel(p) {
+            if (profileChecks.has(p.id)) return '检查中…';
+            if (!p.lastCheck) return '未检查列表';
+            return p.lastCheck.ok ? '列表可读 · ' + p.lastCheck.count + ' 模型' : '列表检查失败';
+        }
+
         /* ---------------- 设置面板：配置卡片 ---------------- */
         function profileCard(p) {
             const active = isActive(p);
@@ -859,7 +960,11 @@
             const meta = $('<div class="aqs-card-meta"></div>');
             if (models.length) $('<span class="aqs-chip aqs-chip-model"></span>').text(modelSummary(models)).attr('title', models.join('\n')).appendTo(meta);
             if (models.length > 1) $('<span class="aqs-chip aqs-chip-dim"></span>').text(models.length + ' 个模型').appendTo(meta);
-            $('<span class="aqs-chip aqs-chip-dim"></span>').text(p.key ? '已保存密钥' : p.nativeKeyId ? '已绑定 TT 密钥' : p.needsKey ? '待补密钥' : '无密钥').appendTo(meta);
+            $('<span class="aqs-chip aqs-chip-dim"></span>').text(p.key ? '已保存密钥' : p.nativeKeyId ? '已绑定 TT 密钥（不可读）' : p.needsKey ? '待补密钥' : '无密钥').appendTo(meta);
+            $('<span class="aqs-chip aqs-chip-dim"></span>').text(formatInfo(p.apiFormat).label).appendTo(meta);
+            $('<span class="aqs-chip aqs-chip-check"></span>').text(checkLabel(p))
+                .attr('title', p.lastCheck ? '最近检查：' + new Date(p.lastCheck.at).toLocaleString() : '只读取模型列表，不验证聊天')
+                .appendTo(meta);
             card.append(meta);
 
             if (models.length > 1 && !folded) {
@@ -882,6 +987,9 @@
             const btns = $('<div class="aqs-card-btns"></div>');
             $('<button class="menu_button aqs-btn aqs-btn-primary" title="切换到默认模型"><i class="fa-solid fa-plug"></i> 使用</button>')
                 .on('click', () => applyProfile(p)).appendTo(btns);
+            $('<button type="button" class="menu_button aqs-btn" title="只读取本站模型列表，不发送聊天消息" aria-label="检查模型列表"><i class="fa-solid fa-heart-pulse"></i></button>')
+                .prop('disabled', profileChecks.has(p.id))
+                .on('click', () => checkProfile(p)).appendTo(btns);
             if (models.length > 1) {
                 $('<button class="menu_button aqs-btn" title="展开 / 折叠该站模型"><i class="fa-solid fa-layer-group"></i> 模型</button>')
                     .on('click', (e) => {
@@ -897,13 +1005,15 @@
                     save();
                     renderAll();
                     toastr.success('已为「' + p.name + '」设置默认模型：' + m);
-                }, p.nativeKeyId)).appendTo(btns);
+                }, p.nativeKeyId, p.apiFormat)).appendTo(btns);
             $('<button class="menu_button aqs-btn" title="编辑"><i class="fa-solid fa-pen"></i></button>')
                 .on('click', () => startEdit(p)).appendTo(btns);
             $('<button class="menu_button aqs-btn aqs-danger" title="删除"><i class="fa-solid fa-trash"></i></button>')
                 .on('click', () => {
                     if (!confirm('确定删除「' + p.name + '」？')) return;
                     settings.profiles = settings.profiles.filter((x) => x.id !== p.id);
+                    settings.recentProfiles = settings.recentProfiles.filter((id) => id !== p.id);
+                    invalidateProfileCheck(p);
                     if (p.id) delete settings.modelCollapsed[p.id];
                     if (editingId === p.id) resetForm();
                     save();
@@ -1115,13 +1225,26 @@
         /* renderAll 在快捷面板段重定义，同步刷新嵌入面板 */
 
         /* ---------------- 表单 ---------------- */
+        function refreshFormKeyState() {
+            const field = $('#aqs_key');
+            const profile = settings.profiles.find((p) => p.id === editingId && normUrl(p.url) === formUrl());
+            const bound = Boolean(profile?.nativeKeyId && !String(field.val() || '').trim());
+            if (bound) field.attr('type', 'password');
+            field.attr('placeholder', bound ? 'TT 已绑定密钥（明文不可读）' : '输入站点密钥');
+            const visible = field.attr('type') !== 'password';
+            $('#aqs_key_toggle').prop('disabled', bound).attr('aria-pressed', String(visible))
+                .text(bound ? '不可显示' : visible ? '隐藏' : '显示');
+            $('#aqs_form_hint').text(bound ? '已绑定 TT 密钥，只保存本机引用，明文不可读；切换时会自动使用。输入新 Key 可替换绑定。'
+                : profile?.needsKey && !field.val() ? '此站点缺少可用密钥，请绑定或补填。' : '');
+        }
+
         function startEdit(p) {
             editingId = p.id;
             $('#aqs_name').val(p.name);
             $('#aqs_url').val(p.url);
             $('#aqs_key').val(p.key || '').attr('type', 'password');
-            $('#aqs_key_toggle').attr('aria-pressed', 'false').text('显示');
-            $('#aqs_form_hint').text(p.needsKey && !p.key ? '此站点的原生密钥未读回，请补填。' : '');
+            $('#aqs_api_format').val(formatInfo(p.apiFormat).value);
+            refreshFormKeyState();
             $('#aqs_model').val(profileModels(p).join('\n'));
             if (p.group && groupNames().includes(p.group)) setGroupState(p.group, false);
             else if (p.group) setGroupState('', true, p.group);
@@ -1136,8 +1259,9 @@
         function resetForm() {
             editingId = null;
             $('#aqs_name, #aqs_url, #aqs_key, #aqs_model').val('');
-            $('#aqs_key').attr('type', 'password');
-            $('#aqs_key_toggle').attr('aria-pressed', 'false').text('显示');
+            $('#aqs_key').attr('type', 'password').attr('placeholder', '输入站点密钥');
+            $('#aqs_key_toggle').attr('aria-pressed', 'false').text('显示').prop('disabled', false);
+            $('#aqs_api_format').val(DEFAULT_CUSTOM_FORMAT);
             $('#aqs_form_hint').text('');
             setGroupState('', false);
             $('#aqs_form_title').text('新增站点');
@@ -1146,7 +1270,7 @@
         }
 
         function formUrl() {
-            return normUrl($('#aqs_url').val()).replace(/\/(?:chat\/completions|models)$/i, '');
+            return normUrl($('#aqs_url').val()).replace(/\/(?:chat\/completions|responses|messages|models(?:\/[^/]+:generateContent)?)$/i, '');
         }
 
         async function onSave(useNow = false) {
@@ -1158,6 +1282,7 @@
             const models = splitModelValues($('#aqs_model').val());
             const model = models[0] || '';
             const group = currentGroupValue();
+            const apiFormat = formatInfo($('#aqs_api_format').val()).value;
 
             if (!validApiUrl(url)) {
                 $('#aqs_form_hint').text('请输入有效的 HTTP(S) API 地址。');
@@ -1165,11 +1290,14 @@
                 return;
             }
             let saved;
-            const edits = { name, url, key, model, models, group };
+            const edits = { name, url, key, model, models, group, apiFormat };
             const update = (profile) => {
-                const needsKey = Boolean(!key && (profile.needsKey || profile.nativeKeyId) && normUrl(profile.url) === url);
-                const nativeKeyId = !key && normUrl(profile.url) === url ? profile.nativeKeyId : '';
-                return Object.assign(profile, edits, { needsKey, nativeKeyId });
+                const sameUrl = normUrl(profile.url) === url;
+                const nativeKeyId = !key && sameUrl ? profile.nativeKeyId || '' : '';
+                const needsKey = !key && !nativeKeyId && sameUrl && profile.needsKey === true;
+                const next = { ...edits, nativeKeyId };
+                if (!sameConnection(profile, next)) invalidateProfileCheck(profile);
+                return Object.assign(profile, next, { needsKey });
             };
 
             if (editingId) {
@@ -1201,7 +1329,7 @@
         function exportProfiles(includeKeys = false) {
             if (!settings.profiles.length) { toastr.warning('没有可导出的站点'); return; }
             if (includeKeys && !confirm('完整备份包含明文 API Key。确认导出？')) return;
-            const profiles = settings.profiles.map(({ key, nativeKeyId, ...profile }) => {
+            const profiles = settings.profiles.map(({ key, nativeKeyId, lastCheck, ...profile }) => {
                 const needsKey = Boolean(nativeKeyId || profile.needsKey || (!includeKeys && key));
                 return includeKeys ? { ...profile, key, needsKey } : { ...profile, needsKey };
             });
@@ -1232,6 +1360,7 @@
                             model: models[0] || '',
                             models,
                             group: typeof item.group === 'string' ? item.group.trim() : '',
+                            apiFormat: formatInfo(item.apiFormat).value,
                         };
                         if (!clean.name || !clean.url) continue;
                         if (!validApiUrl(clean.url)) continue;
@@ -1246,8 +1375,11 @@
                             clean.nativeKeyId = '';
                             clean.needsKey = item.needsKey === true;
                         }
-                        if (dup) { Object.assign(dup, clean); updated++; }
-                        else { settings.profiles.push({ id: uid(), ...clean }); added++; }
+                        if (dup) {
+                            if (!sameConnection(dup, { ...dup, ...clean })) invalidateProfileCheck(dup);
+                            Object.assign(dup, clean);
+                            updated++;
+                        } else { settings.profiles.push({ id: uid(), ...clean }); added++; }
                     }
                     save();
                     renderAll();
@@ -1263,17 +1395,19 @@
         /* ---------------- 快捷面板 / 插头嵌入 ---------------- */
         function buildProfileItems($root, { pageKey } = {}) {
             $root.empty();
-            const filtered = settings.profiles.filter(matchSearch);
+            const sourceProfiles = profileFilterList();
+            const filtered = sourceProfiles.filter(matchSearch);
             if (!filtered.length) {
-                if (searchQuery) {
-                    $root.append($('<div class="aqs-empty">没有匹配「' + $('<span>').text(searchQuery).html() + '」的站点</div>'));
-                } else {
-                    $root.append($('<div class="aqs-empty">先去扩展设置里添加站点</div>'));
-                }
+                const message = searchQuery ? '没有匹配「' + searchQuery + '」的站点'
+                    : !settings.profiles.length ? '先去扩展设置里添加站点'
+                    : settings.quickFilter === 'recent' ? '还没有最近使用的站点，切换后会显示在这里'
+                    : settings.quickFilter === 'favorites' ? '还没有收藏站点，可在设置里的站点卡片点 ☆'
+                    : '没有站点';
+                $root.append($('<div class="aqs-empty"></div>').text(message));
                 return;
             }
 
-            const flat = orderedProfiles().filter(matchSearch);
+            const flat = filtered;
             const key = pageKey || 'embed';
             const raw = settings.pages[key] || 0;
             const cur = clampPage(raw, flat.length);
@@ -1617,6 +1751,34 @@
             return bar;
         }
 
+        function renderQuickFilters(panel) {
+            let filters = panel.children('.aqs-qp-filters');
+            if (!filters.length) {
+                filters = $('<div class="aqs-qp-filters" role="group" aria-label="站点范围"></div>').insertAfter(panel.children('.aqs-search-bar'));
+                for (const [value, label] of [['all', '全部'], ['recent', '最近使用'], ['favorites', '收藏']]) {
+                    $('<button type="button" class="aqs-btn aqs-qp-filter"></button>')
+                        .attr('data-filter', value).text(label)
+                        .on('click', () => {
+                            settings.quickFilter = value;
+                            settings.pages.quick = settings.pages.embed = 0;
+                            save();
+                            renderAll();
+                            layoutQuickPanel(document.getElementById('aqs_wand_btn'));
+                        }).appendTo(filters);
+                }
+                $('<button type="button" class="aqs-btn aqs-previous" aria-label="返回上次站点">返回上次</button>')
+                    .on('click', () => { const previous = previousProfile(); if (previous) void applyProfile(previous); })
+                    .appendTo(filters);
+            }
+            filters.find('.aqs-qp-filter').each(function () {
+                const active = this.dataset.filter === settings.quickFilter;
+                $(this).toggleClass('aqs-filter-active', active).attr('aria-pressed', String(active));
+            });
+            const previous = previousProfile();
+            filters.find('.aqs-previous').prop('disabled', !previous)
+                .attr('title', previous ? '返回「' + previous.name + '」' : '切换站点后可返回上次使用的站点');
+        }
+
         function renderQuickPanel() {
             const panel = $('#aqs_quick_panel');
             if (!panel.length) return;
@@ -1630,6 +1792,7 @@
                 locate.on('click', () => locateCurrent('quick'));
                 panel.append('<div class="aqs-quick-results"></div>');
             }
+            renderQuickFilters(panel);
             panel.find('.aqs-search-input').each(function () { if (this !== document.activeElement) this.value = searchQuery; });
             panel.find('.aqs-search-clear').toggle(Boolean(searchQuery));
             panel.find('.aqs-qp-locate').prop('disabled', !currentProfile());
@@ -1640,11 +1803,12 @@
             const body = $('#aqs_api_embed_body');
             if (!body.length) return;
             if (!$('#aqs_embed_search').length) body.before(addSearch(body.parent(), 'embed'));
+            renderQuickFilters(body.parent());
             buildProfileItems(body, { pageKey: 'embed' });
-            const n = settings.profiles.filter(matchSearch).length;
+            const n = profileFilterList().filter(matchSearch).length;
             const total = settings.profiles.length;
             $('#aqs_api_embed_locate').prop('disabled', !currentProfile());
-            $('#aqs_api_embed_count').text(searchQuery ? n + '/' + total + ' 站' : total ? total + ' 站' : '空');
+            $('#aqs_api_embed_count').text(searchQuery || settings.quickFilter !== 'all' ? n + '/' + total + ' 站' : total ? total + ' 站' : '空');
         }
 
         function locateCurrent(surface) {
@@ -1652,9 +1816,11 @@
             if (!profile) return;
             const input = $(surface === 'quick' ? '#aqs_quick_panel .aqs-search-input' : '#aqs_embed_search input');
             if (!matchSearch(profile)) input.val('').trigger('input');
-            const entries = orderedProfiles().filter(matchSearch);
+            if (!profileFilterList().includes(profile)) settings.quickFilter = 'all';
+            const entries = profileFilterList().filter(matchSearch);
             settings.pages[surface] = Math.floor(entries.indexOf(profile) / PAGE_SIZE);
             save();
+            renderAll();
             if (surface === 'quick') {
                 renderQuickPanel();
                 layoutQuickPanel(document.getElementById('aqs_wand_btn'));
@@ -1849,7 +2015,7 @@
         function captureNativeApiSnapshot() {
             const url = currentUrl();
             if (!validApiUrl(url)) return null;
-            return { url, key: String($('#api_key_custom').val() || '').trim(), model: currentModel() };
+            return { url, key: String($('#api_key_custom').val() || '').trim(), model: currentModel(), apiFormat: currentFormat() };
         }
 
         function describeNativeSync(message) {
@@ -1863,10 +2029,12 @@
             syncAbort?.abort();
         }
 
+        const matchesNativeSnapshot = (snap) => currentUrl() === snap.url && currentFormat() === formatInfo(snap.apiFormat).value;
+
         async function syncNativeProfile(snap, serial, { bindId, explicit = false } = {}) {
-            const current = () => syncSerial === serial && (explicit || settings.autoSyncNative) && !applyBusy && currentUrl() === snap.url;
+            const current = () => syncSerial === serial && (explicit || settings.autoSyncNative) && !applyBusy && matchesNativeSnapshot(snap);
             if (!current()) return;
-            const matches = settings.profiles.filter(p => normUrl(p.url) === snap.url);
+            const matches = settings.profiles.filter(p => normUrl(p.url) === snap.url && formatInfo(p.apiFormat).value === formatInfo(snap.apiFormat).value);
             const exact = matches.find(p => (snap.key && p.key === snap.key) || (bindId && p.nativeKeyId === bindId));
             const hit = exact || (matches.length === 1 ? matches[0] : null);
             if (!hit && matches.length > 1) {
@@ -1882,10 +2050,12 @@
             const key = bindId ? '' : snap.key || hit?.key || '';
             const needsKey = !key && !nativeKeyId && (hit?.needsKey || !entries || entries.some(item => item.active));
             const profile = hit || { id: uid(), url: snap.url, name: uniqueProfileName(profileNameFromUrl(snap.url)), group: '', model: '', models: [] };
-            Object.assign(profile, { key, nativeKeyId, needsKey: Boolean(needsKey) });
+            const credentials = { url: snap.url, key, nativeKeyId, apiFormat: formatInfo(snap.apiFormat).value };
+            if (hit && !sameConnection(profile, credentials)) invalidateProfileCheck(profile);
+            Object.assign(profile, credentials, { needsKey: Boolean(needsKey) });
             if (!hit) settings.profiles.push(profile);
             activeProfileId = profile.id;
-            save();
+            rememberRecent(profile);
             renderAll();
             // Save credentials separately; failing to enumerate models must not lose a confirmed key.
             let suffix = snap.model ? '未验证模型，未自动添加。' : '未选择模型。';
@@ -1893,8 +2063,8 @@
                 const controller = syncAbort = new AbortController();
                 describeNativeSync('已保存配置，正在核对本站模型…');
                 try {
-                    const available = await fetchModelList(snap.url, key, controller.signal, { nativeKeyId, exact: true });
-                    if (!current() || !settings.profiles.includes(profile) || normUrl(profile.url) !== snap.url) return;
+                    const available = await fetchModelList(snap.url, key, controller.signal, { nativeKeyId, exact: true, apiFormat: snap.apiFormat });
+                    if (!current() || !settings.profiles.includes(profile) || !sameConnection(profile, credentials)) return;
                     if (currentModel() !== snap.model) suffix = '核对期间模型已更换，未保存旧模型。';
                     else if (available.includes(snap.model)) {
                         const models = splitModelValues(profileModels(profile), [snap.model]);
@@ -1929,7 +2099,7 @@
             closeNativeKeyPicker();
             const revision = bindingRevision;
             const snap = captureNativeApiSnapshot();
-            if (!snap) { describeNativeSync('请先在插头面板设置一个 OpenAI 兼容的自定义地址。'); return; }
+            if (!snap) { describeNativeSync('请先在插头面板设置一个自定义 API 地址。'); return; }
             if (snap.key) { describeNativeSync('原生面板还有未保存的 Key，请先点「连接」保存。'); return; }
             let entries;
             try { entries = await readCustomSecrets(); }
@@ -1937,7 +2107,7 @@
                 if (revision === bindingRevision) describeNativeSync('未能读取 TT 密钥列表，请稍后重试。');
                 return;
             }
-            if (revision !== bindingRevision || applyBusy || currentUrl() !== snap.url) return;
+            if (revision !== bindingRevision || applyBusy || !matchesNativeSnapshot(snap)) return;
             // The short-lived API 快切 slot gets deleted on subsequent switches. Never bind to it.
             const options = entries.filter(entry => typeof entry?.id === 'string' && entry.id && !isPluginSecret(entry));
             if (!options.length) {
@@ -1967,7 +2137,7 @@
             try {
                 const entry = (await readCustomSecrets()).find(item => item.id === id && !isPluginSecret(item));
                 if (revision !== bindingRevision) return;
-                if (applyBusy || currentUrl() !== snap.url || !entry) {
+                if (applyBusy || !matchesNativeSnapshot(snap) || !entry) {
                     closeNativeKeyPicker();
                     describeNativeSync('连接地址或密钥已变化，请重新打开绑定。');
                     return;
@@ -2015,6 +2185,7 @@
             const invalidate = () => { clear(); invalidateNativeSync(); closeNativeKeyPicker(); };
             ctx.eventSource?.on?.(ctx.eventTypes?.CHATCOMPLETION_SOURCE_CHANGED || 'chatcompletion_source_changed', invalidate);
             $(document).on('input.aqsSync', '#custom_api_url_text', invalidate);
+            $(document).on('change.aqsSync', '#chat_completion_source', invalidate);
             $(document).on('input.aqsSync', '#api_key_custom', function () { if (this.value) invalidate(); });
         }
 
@@ -2092,6 +2263,7 @@
                     </div>
                     <div class="aqs-form-grid">
                       <label class="aqs-field aqs-field-wide"><span>API 地址</span><input id="aqs_url" class="text_pole" type="text" inputmode="url" placeholder="https://example.com/v1" autocomplete="off" spellcheck="false" required></label>
+                      <label class="aqs-field"><span>接口格式</span><select id="aqs_api_format" class="text_pole">${CUSTOM_FORMATS.map((item) => `<option value="${item.value}">${item.label}</option>`).join('')}</select></label>
                       <label class="aqs-field"><span>站点名称 <small>可选</small></span><input id="aqs_name" class="text_pole" type="text" placeholder="留空则用域名" autocomplete="off"></label>
                       <div class="aqs-field"><label for="aqs_key">API Key <small>按站点要求填写</small></label>
                         <div class="aqs-input-action"><input id="aqs_key" class="text_pole" type="password" placeholder="输入站点密钥" autocomplete="off" data-tt-sensitive><button type="button" id="aqs_key_toggle" class="aqs-btn" aria-label="显示或隐藏 API Key" aria-pressed="false">显示</button></div>
@@ -2134,7 +2306,7 @@
                   </div>
                   <span class="aqs-note">
                     手机端主入口：点顶部「插头 / API Connections」即可快切；魔法棒菜单为快捷入口。
-                    切换后若密钥未生效，可到 API 页点一次 Connect。
+                    切换后请查看酒馆连接状态；模型列表可读不代表聊天一定可用。
                   </span>
                 </div>
               </div>
@@ -2166,7 +2338,8 @@
             $('#aqs_native_key_cancel').on('click.aqs', () => { closeNativeKeyPicker(); describeNativeSync(''); });
             $('#aqs_save').on('click.aqs', () => onSave(false));
             $('#aqs_save_use').on('click.aqs', () => onSave(true));
-            $('#aqs_url').on('input.aqs', () => $('#aqs_form_hint').text(''));
+            $('#aqs_url, #aqs_key').on('input.aqs', refreshFormKeyState);
+
             $('#aqs_key_toggle').on('click.aqs', function () {
                 const field = $('#aqs_key');
                 const visible = field.attr('type') === 'password';
@@ -2175,15 +2348,17 @@
             });
             $('#aqs_fill_current').on('click.aqs', () => {
                 const snap = captureNativeApiSnapshot();
-                if (!snap) { $('#aqs_form_hint').text('酒馆当前不是 OpenAI 兼容自定义连接，或未填写地址。'); return; }
+                if (!snap) { $('#aqs_form_hint').text('酒馆当前不是受支持的自定义连接，或未填写地址。'); return; }
                 const formAddress = formUrl();
                 if (formAddress && formAddress !== snap.url) {
                     $('#aqs_form_hint').text('未覆盖不同地址的草稿；请先清空地址再填入。');
                     return;
                 }
                 $('#aqs_url').val(snap.url);
+                $('#aqs_api_format').val(snap.apiFormat);
                 if (!$('#aqs_model').val() && snap.model) $('#aqs_model').val(snap.model);
-                $('#aqs_form_hint').text('已填入当前地址和模型，API Key 不会从酒馆密钥库复制。');
+                refreshFormKeyState();
+                $('#aqs_form_hint').text('已填入当前地址、接口格式和模型，API Key 不会从酒馆密钥库复制。');
             });
             $('#aqs_cancel_edit').off('click.aqs').on('click.aqs', resetForm);
             $('#aqs_export').off('click.aqs').on('click.aqs', () => exportProfiles());
@@ -2199,7 +2374,7 @@
                 openModelPicker(url, $('#aqs_key').val(), (m) => {
                     const list = appendModelToInput('#aqs_model', m);
                     toastr.success('已加入：' + m + (list.length > 1 ? '（共 ' + list.length + ' 个模型）' : ''), 'API 快切');
-                }, $('#aqs_key').val() ? undefined : editing?.nativeKeyId);
+                }, $('#aqs_key').val() ? undefined : editing?.nativeKeyId, $('#aqs_api_format').val() || editing?.apiFormat || DEFAULT_CUSTOM_FORMAT);
             });
             $('#aqs_auto_sync_native')
                 .prop('checked', !!settings.autoSyncNative)

@@ -24,19 +24,38 @@ async function setup(page) {
         const $ = window.$;
         const state = window.testState = {
             profiles, connects: [], lookup: [], requests: [], nextId: 0, suspended: 0,
+            validationAttempts: 0, suppressedValidations: 0, automaticValidations: 0,
             secrets: [{ id: 'native', value: 'native-test', label: '我的 API 快切备用', active: true }],
         };
         window.__TAURITAVERN__ = {};
         const bus = new EventTarget();
         const eventSource = { on: (name, fn) => bus.addEventListener(name, e => fn(e.detail)), emit: (name, detail) => bus.dispatchEvent(new CustomEvent(name, { detail })) };
-        window.SillyTavern = { getContext: () => ({ eventSource, eventTypes: { SECRET_WRITTEN: 'secret_written' }, extensionSettings: { st_api_switcher: state }, saveSettingsDebounced() {}, getRequestHeaders: () => ({ 'Content-Type': 'application/json' }) }) };
+        const context = {
+            eventSource,
+            eventTypes: { SECRET_WRITTEN: 'secret_written' },
+            extensionSettings: { st_api_switcher: state },
+            mainApi: 'textgenerationwebui',
+            chatCompletionSettings: { chat_completion_source: 'custom', custom_api_format: 'openai_compat', custom_url: '', custom_model: '' },
+            saveSettingsDebounced() { state.settingsSaves = (state.settingsSaves || 0) + 1; },
+            getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
+        };
+        state.context = context;
+        window.SillyTavern = { getContext: () => context };
         window.toastr = new Proxy({}, { get: (_, level) => (message) => { state.lastToast = { level, message }; } });
-        const source = $('<select id="chat_completion_source"><option value="openai">OpenAI</option><option value="custom_openai_responses">Responses</option><option value="custom">Custom</option></select>');
+        const source = $('<select id="chat_completion_source"><option value="openai">OpenAI</option><option value="custom">OpenAI Chat Completions</option><option value="custom_openai_responses">OpenAI Responses</option><option value="custom_claude_messages">Claude Messages</option><option value="custom_gemini_generate_content">Gemini Generate Content</option><option value="custom_gemini_interactions">Gemini Interactions</option></select>');
+        const formatBySource = {
+            custom: 'openai_compat',
+            custom_openai_responses: 'openai_responses',
+            custom_claude_messages: 'claude_messages',
+            custom_gemini_generate_content: 'gemini_generate_content',
+            custom_gemini_interactions: 'gemini_interactions',
+        };
         const controls = $('<div><input id="custom_api_url_text"><input id="custom_model_id"><input id="api_key_custom" type="password"></div>');
         const button = $('<button id="api_button_openai">Connect</button>');
         const connect = function (event) {
             event.stopPropagation();
-            if (state.suspended) return;
+            state.validationAttempts++;
+            if (state.suspended) { state.suppressedValidations++; return; }
             const key = String($('#api_key_custom').val() ?? '');
             if (key) {
                 state.completeNativeWrite = () => {
@@ -45,15 +64,35 @@ async function setup(page) {
                 };
                 if (!state.holdNativeWrite) queueMicrotask(state.completeNativeWrite);
             }
+            const selectedSource = String(source.val() || '');
+            const apiFormat = formatBySource[selectedSource] || 'openai_compat';
+            context.chatCompletionSettings = {
+                ...context.chatCompletionSettings,
+                chat_completion_source: selectedSource.startsWith('custom') ? 'custom' : selectedSource,
+                custom_api_format: apiFormat,
+                custom_url: String($('#custom_api_url_text').val() || ''),
+                custom_model: String($('#custom_model_id').val() || ''),
+            };
             state.connects.push({ url: $('#custom_api_url_text').val(), model: $('#custom_model_id').val(), key: key || state.secrets.find(x => x.active)?.value });
         };
         button.on('click', connect);
         source.on('change', () => {
             controls.detach();
-            if (source.val() === 'custom') button.before(controls);
-            button.trigger('click');
+            const selectedSource = String(source.val() || '');
+            if (formatBySource[selectedSource]) button.before(controls);
+            context.chatCompletionSettings = {
+                ...context.chatCompletionSettings,
+                chat_completion_source: selectedSource.startsWith('custom') ? 'custom' : selectedSource,
+                custom_api_format: formatBySource[selectedSource] || 'openai_compat',
+                custom_url: String($('#custom_api_url_text').val() || ''),
+                custom_model: String($('#custom_model_id').val() || ''),
+            };
+            state.validationAttempts++;
+            if (state.suspended) state.suppressedValidations++;
+            else state.automaticValidations++;
         });
         $('#main_api').on('change', function () {
+            context.mainApi = this.value;
             source.detach(); button.detach(); controls.detach();
             if (this.value === 'openai') $('#connector').append(source, button);
         });
@@ -86,12 +125,33 @@ async function setup(page) {
                 return json({ ok: true });
             }
             if (url.endsWith('/chat-completions/status')) {
-                state.lookup.push(body);
+                const lookup = { ...body, submittedCustomUrl: body.custom_url, custom_url: body.custom_url || body.reverse_proxy };
+                state.lookup.push(lookup);
+                const formats = ['openai_compat', 'openai_responses', 'claude_messages', 'gemini_generate_content', 'gemini_interactions'];
+                if (body.chat_completion_source !== 'custom' || !formats.includes(body.custom_api_format)) {
+                    return json({ error: true, message: '状态请求必须使用 canonical custom + custom_api_format' }, 400);
+                }
+                const base = body.custom_url || body.reverse_proxy;
+                if (!base || body.custom_include_headers) {
+                    return json({ error: true, message: '状态请求不得携带旧 header 鉴权' }, 400);
+                }
+                if (body.secret_id) {
+                    if (body.custom_url !== base || body.reverse_proxy !== undefined || body.proxy_password !== undefined
+                        || !state.secrets.some(item => item.id === body.secret_id)) {
+                        return json({ error: true, message: '绑定密钥请求格式错误' }, 400);
+                    }
+                } else if (body.custom_url !== '' || body.reverse_proxy !== base || typeof body.proxy_password !== 'string') {
+                    return json({ error: true, message: '显式 Key 请求格式错误' }, 400);
+                }
+                const nativeKey = body.secret_id ? state.secrets.find(item => item.id === body.secret_id) : null;
                 if (state.delayLookup) await new Promise((resolve, reject) => {
                     state.releaseLookup = resolve;
                     options.signal.addEventListener('abort', () => { state.aborted = true; reject(options.signal.reason); }, { once: true });
                 });
-                if (state.nativeModels?.[body.custom_url]) return json({ data: state.nativeModels[body.custom_url].map(id => ({ id })) });
+                const models = state.nativeModelsByFormat?.[lookup.custom_url + '|' + body.custom_api_format]
+                    || state.nativeModels?.[lookup.custom_url]
+                    || (nativeKey ? state.nativeModels?.[lookup.custom_url] : null);
+                if (models) return json({ data: models.map(id => ({ id })) });
                 if (state.denyLookup) return json({ error: true, message: '请在 TT 信任此端点', data: { data: [] } });
                 return json({ data: { data: Array.from({ length: 28 }, (_, id) => ({ id: 'fixture-model-' + String(id).padStart(2, '0') })) } });
             }
@@ -203,7 +263,13 @@ const scenarios = {
         assert.equal(state.lookups.length, 2);
         assert.equal(state.writes, 0);
         assert.equal(state.secret.active, true);
-        assert.ok(state.lookups.every(call => call.custom_include_headers.Authorization === 'Bearer fixture-own'));
+        assert.ok(state.lookups.every(call => call.chat_completion_source === 'custom'
+            && call.custom_api_format === 'openai_compat'
+            && call.submittedCustomUrl === ''
+            && call.reverse_proxy === 'https://models.invalid/v1'
+            && call.proxy_password === 'fixture-own'
+            && !Object.hasOwn(call, 'custom_include_headers')
+            && !Object.hasOwn(call, 'secret_id')));
     },
     async drawers(page, size, alternate) {
         await activate(page.locator('#aqs_wand_btn'));
@@ -227,7 +293,43 @@ const scenarios = {
         await activate(page.locator('#aqs_api_embed_toggle'));
         assert.equal(await page.locator('#aqs_embed_search').isVisible(), true);
     },
+    async filtersAndBack(page) {
+        await switchAndWait(page, 'Alpha', 1);
+        await switchAndWait(page, 'Beta', 2);
+        const embed = page.locator('#aqs_api_embed');
+        await activate(embed.locator('.aqs-qp-filter[data-filter="recent"]'));
+        assert.deepEqual((await embed.locator('.aqs-qp-item .aqs-qp-name').allTextContents()).slice(0, 2), ['Beta', 'Alpha']);
+
+        await activate(page.locator('#aqs_wand_btn'));
+        const quick = page.locator('#aqs_quick_panel');
+        const back = quick.getByRole('button', { name: '返回上次站点' });
+        assert.equal(await back.isDisabled(), false);
+        assert.match(await back.getAttribute('title'), /Alpha/);
+        await activate(back);
+        await wait(page, () => testState.connects.length === 3);
+        assert.equal(await page.evaluate(() => testState.connects.at(-1).url), initial[0].url);
+
+        await activate(quick.locator('.aqs-qp-filter[data-filter="favorites"]'));
+        await quick.getByText(/还没有收藏站点/).waitFor(timeout);
+        assert.equal(await embed.locator('.aqs-qp-filter[data-filter="favorites"]').getAttribute('aria-pressed'), 'true');
+        await activate(quick.locator('.aqs-qp-locate'));
+        assert.equal(await quick.locator('.aqs-qp-filter[data-filter="all"]').getAttribute('aria-pressed'), 'true');
+        assert.match(await quick.locator('.aqs-qp-item.aqs-active').innerText(), /Alpha/);
+
+        await embed.locator('#aqs_embed_search input').fill('Beta');
+        assert.equal(await quick.locator('.aqs-search-input').inputValue(), 'Beta');
+        assert.equal(await quick.locator('.aqs-qp-item').count(), 1);
+        await activate(quick.locator('.aqs-search-clear'));
+        assert.equal(await embed.locator('#aqs_embed_search input').inputValue(), '');
+        assert.equal(await quick.locator('.aqs-search-input').inputValue(), '');
+    },
     async favoritesAndExport(page) {
+        await page.evaluate(() => {
+            const beta = testState.profiles.find(p => p.name === 'Beta');
+            beta.nativeKeyId = 'native';
+            beta.apiFormat = 'openai_responses';
+            beta.lastCheck = { ok: true, at: 123, count: 28 };
+        });
         await activate(page.getByRole('button', { name: '收藏 Beta', exact: true }));
         assert.match(await page.locator('#aqs_api_embed_body .aqs-qp-item').first().innerText(), /Beta/);
         await activate(page.locator('#aqs_wand_btn'));
@@ -246,6 +348,9 @@ const scenarios = {
         assert.ok(clean.profiles.every(p => !Object.hasOwn(p, 'key')));
         assert.equal(clean.profiles.find(p => p.name === 'Beta').favorite, true);
         const beta = clean.profiles.find(p => p.name === 'Beta');
+        assert.equal(beta.apiFormat, 'openai_responses');
+        assert.equal(Object.hasOwn(beta, 'nativeKeyId'), false);
+        assert.equal(Object.hasOwn(beta, 'lastCheck'), false);
         const input = page.locator('#aqs_import_file');
         await input.setInputFiles({ name: 'clean.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify([beta])) });
         await wait(page, () => testState.lastToast?.message?.includes('更新 1'));
@@ -255,7 +360,11 @@ const scenarios = {
         await accept;
         const full = await page.evaluate(() => testState.exported);
         assert.equal(full.includesKeys, true);
-        assert.equal(full.profiles.find(p => p.name === 'Beta').key, 'fixture-beta');
+        const fullBeta = full.profiles.find(p => p.name === 'Beta');
+        assert.equal(fullBeta.key, 'fixture-beta');
+        assert.equal(fullBeta.apiFormat, 'openai_responses');
+        assert.equal(Object.hasOwn(fullBeta, 'nativeKeyId'), false);
+        assert.equal(Object.hasOwn(fullBeta, 'lastCheck'), false);
     },
     async nativeSync(page) {
         await switchAndWait(page, 'Alpha', 1);
@@ -292,7 +401,7 @@ const scenarios = {
             testState.secrets.find(entry => entry.id === 'native').active = false;
         });
         await activate(page.locator('#aqs_bind_native_key'));
-        assert.equal(await page.locator('#aqs_native_key_target').innerText(), 'https://bound.invalid/v1');
+        await wait(page, () => document.querySelector('#aqs_native_key_target')?.textContent === 'https://bound.invalid/v1');
         assert.equal(await page.locator('#aqs_native_key_select option').count(), 2);
         assert.equal(await page.locator('#aqs_native_key_apply').isDisabled(), true);
         await page.locator('#aqs_native_key_select').selectOption('native');
@@ -302,6 +411,13 @@ const scenarios = {
         const bound = await page.evaluate(() => testState.profiles.find(p => p.name === 'bound.invalid'));
         assert.equal(bound.nativeKeyId, 'native');
         assert.equal(bound.key, '');
+        const boundLookup = await page.evaluate(() => testState.lookup.find(call => call.custom_url === 'https://bound.invalid/v1'));
+        assert.equal(boundLookup.chat_completion_source, 'custom');
+        assert.equal(boundLookup.custom_api_format, 'openai_compat');
+        assert.equal(boundLookup.secret_id, 'native');
+        assert.equal(Object.hasOwn(boundLookup, 'reverse_proxy'), false);
+        assert.equal(Object.hasOwn(boundLookup, 'proxy_password'), false);
+        assert.equal(Object.hasOwn(boundLookup, 'custom_include_headers'), false);
         await page.locator('#aqs_embed_search input').fill('Beta');
         await switchAndWait(page, 'Beta', 7);
         await page.locator('#aqs_embed_search input').fill('bound.invalid');
@@ -406,15 +522,165 @@ const scenarios = {
             assert.ok(appearance.title >= 4.5 && appearance.model >= 4.5 && appearance.search >= 4.5, JSON.stringify(appearance));
         }
     },
+    async formatsAndSync(page) {
+        const sharedUrl = 'https://shared-sync.invalid/v1';
+        const addAndUse = async (name, apiFormat, key, model, expectedSource, count) => {
+            const prior = await page.evaluate(() => ({ suppressed: testState.suppressedValidations, attempts: testState.validationAttempts }));
+            await page.locator('#aqs_name').fill(name);
+            await page.locator('#aqs_url').fill(sharedUrl);
+            await page.locator('#aqs_key').fill(key);
+            await page.locator('#aqs_model').fill(model);
+            await page.locator('#aqs_api_format').selectOption(apiFormat);
+            await activate(page.locator('#aqs_save_use'));
+            await wait(page, n => testState.connects.length === n, count);
+            const state = await page.evaluate(() => ({ source: document.querySelector('#chat_completion_source').value, settings: testState.context.chatCompletionSettings, suppressed: testState.suppressedValidations, attempts: testState.validationAttempts }));
+            assert.ok(state.attempts > prior.attempts);
+            assert.ok(state.suppressed > prior.suppressed);
+            assert.equal(state.source, expectedSource);
+            assert.equal(state.settings.chat_completion_source, 'custom');
+            assert.equal(state.settings.custom_api_format, apiFormat);
+        };
+
+        await addAndUse('Shared Chat', 'openai_compat', 'plugin-chat-key', 'chat-model', 'custom', 1);
+        await page.locator('#aqs_name').fill('Shared Claude');
+        await page.locator('#aqs_url').fill(sharedUrl);
+        await page.locator('#aqs_key').fill('native-claude-key');
+        await page.locator('#aqs_model').fill('native-claude-model');
+        await page.locator('#aqs_api_format').selectOption('claude_messages');
+        await activate(page.locator('#aqs_save'));
+        await wait(page, () => testState.profiles.some(p => p.name === 'Shared Claude'));
+        await page.evaluate(() => {
+            testState.nativeModelsByFormat = {
+                'https://shared-sync.invalid/v1|claude_messages': ['native-claude-model'],
+            };
+        });
+        await page.locator('#chat_completion_source').selectOption('custom_claude_messages');
+        await page.locator('#custom_api_url_text').fill(sharedUrl);
+        await page.locator('#custom_model_id').fill('native-claude-model');
+        await page.locator('#api_key_custom').fill('native-claude-key');
+        await activate(page.locator('#api_button_openai'));
+        await wait(page, () => testState.connects.length === 2);
+        await page.getByText(/已同步「Shared Claude」/).waitFor(timeout);
+        await page.getByText(/模型已核对/).waitFor(timeout);
+        const afterNativeSync = await page.evaluate(url => testState.profiles.filter(p => p.url === url), sharedUrl);
+        assert.deepEqual(afterNativeSync.map(p => [p.apiFormat, p.key, p.model]).sort(), [
+            ['claude_messages', 'native-claude-key', 'native-claude-model'],
+            ['openai_compat', 'plugin-chat-key', 'chat-model'],
+        ]);
+        const claudeLookup = await page.evaluate(() => testState.lookup.find(call => call.custom_api_format === 'claude_messages'));
+        assert.equal(claudeLookup.chat_completion_source, 'custom');
+        assert.equal(claudeLookup.reverse_proxy, sharedUrl);
+        assert.equal(claudeLookup.proxy_password, 'native-claude-key');
+        assert.equal(Object.hasOwn(claudeLookup, 'secret_id'), false);
+        assert.equal(Object.hasOwn(claudeLookup, 'custom_include_headers'), false);
+
+        const remaining = [
+            ['Responses shared', 'openai_responses', 'responses-key', 'responses-model', 'custom_openai_responses'],
+            ['Gemini Generate', 'gemini_generate_content', 'gemini-generate-key', 'gemini-generate-model', 'custom_gemini_generate_content'],
+            ['Gemini Interactions', 'gemini_interactions', 'gemini-interactions-key', 'gemini-interactions-model', 'custom_gemini_interactions'],
+        ];
+        let count = 2;
+        for (const [name, format, key, model, source] of remaining) {
+            await addAndUse(name, format, key, model, source, ++count);
+        }
+        const profiles = await page.evaluate(url => testState.profiles.filter(p => p.url === url), sharedUrl);
+        assert.deepEqual(profiles.map(p => p.apiFormat).sort(), [
+            'claude_messages', 'gemini_generate_content', 'gemini_interactions', 'openai_compat', 'openai_responses',
+        ]);
+        const formatLookups = await page.evaluate(url => testState.lookup.filter(call => call.custom_url === url), sharedUrl);
+        assert.ok(formatLookups.some(call => call.custom_api_format === 'claude_messages' && call.secret_id === undefined));
+    },
+
+    async connectionCheck(page) {
+        await switchAndWait(page, 'Alpha', 1);
+        const alpha = page.locator('#aqs_profile_list .aqs-card').filter({ hasText: 'Alpha' }).first();
+        const before = await page.evaluate(() => ({ model: testState.profiles.find(p => p.name === 'Alpha').model, current: testState.context.chatCompletionSettings }));
+        await activate(alpha.getByRole('button', { name: '检查模型列表' }));
+        await wait(page, () => testState.profiles.find(p => p.name === 'Alpha').lastCheck?.ok === true);
+        assert.match(await alpha.innerText(), /列表可读 · 28 模型/);
+        const after = await page.evaluate(() => ({ model: testState.profiles.find(p => p.name === 'Alpha').model, current: testState.context.chatCompletionSettings, connects: testState.connects.length }));
+        assert.equal(after.model, before.model);
+        assert.deepEqual(after.current, before.current);
+        assert.equal(after.connects, 1);
+        const check = await page.evaluate(() => testState.profiles.find(p => p.name === 'Alpha').lastCheck);
+        assert.deepEqual(Object.keys(check).sort(), ['at', 'count', 'ok']);
+        await page.evaluate(() => { testState.denyLookup = true; });
+        await activate(alpha.getByRole('button', { name: '检查模型列表' }));
+        await wait(page, () => testState.profiles.find(p => p.name === 'Alpha').lastCheck?.ok === false);
+        const failed = await page.evaluate(() => testState.profiles.find(p => p.name === 'Alpha').lastCheck);
+        assert.deepEqual(Object.keys(failed).sort(), ['at', 'count', 'ok']);
+        assert.equal(Object.hasOwn(failed, 'error'), false);
+        assert.equal(await page.evaluate(() => testState.connects.length), 1);
+    },
+    async checkInvalidation(page) {
+        await page.evaluate(() => { testState.delayLookup = true; });
+        const alpha = page.locator('#aqs_profile_list .aqs-card').filter({ hasText: 'Alpha' }).first();
+        await activate(alpha.getByRole('button', { name: '检查模型列表' }));
+        await wait(page, () => testState.lookup.length === 1);
+        await activate(alpha.getByRole('button', { name: '编辑' }));
+        await page.locator('#aqs_api_format').selectOption('openai_responses');
+        await activate(page.locator('#aqs_save'));
+        await wait(page, () => testState.aborted === true);
+        const state = await page.evaluate(() => ({
+            profile: testState.profiles.find(p => p.name === 'Alpha'),
+            lookup: testState.lookup[0],
+        }));
+        assert.equal(state.profile.apiFormat, 'openai_responses');
+        assert.equal(state.profile.lastCheck, null);
+        assert.equal(state.lookup.chat_completion_source, 'custom');
+        assert.equal(state.lookup.custom_api_format, 'openai_compat');
+    },
+    async unsupportedFormat(page) {
+        await switchAndWait(page, 'Alpha', 1);
+        const alpha = page.locator('#aqs_profile_list .aqs-card').filter({ hasText: 'Alpha' }).first();
+        await activate(alpha.getByRole('button', { name: '编辑' }));
+        await page.locator('#aqs_api_format').selectOption('openai_responses');
+        await page.evaluate(() => document.querySelector('#chat_completion_source option[value="custom_openai_responses"]')?.remove());
+        const before = await page.evaluate(() => ({ connects: testState.connects.length, writes: testState.nextId, source: testState.context.chatCompletionSettings.chat_completion_source, format: testState.context.chatCompletionSettings.custom_api_format }));
+        await activate(page.locator('#aqs_save_use'));
+        await wait(page, () => testState.lastToast?.level === 'error');
+        const after = await page.evaluate(() => ({ connects: testState.connects.length, writes: testState.nextId, source: testState.context.chatCompletionSettings.chat_completion_source, format: testState.context.chatCompletionSettings.custom_api_format }));
+        assert.deepEqual(after, before);
+        assert.equal(await page.evaluate(() => testState.profiles.find(p => p.name === 'Alpha').apiFormat), 'openai_responses');
+    },
+    async boundKeyHint(page) {
+        await switchAndWait(page, 'Alpha', 1);
+        await page.evaluate(() => {
+            testState.secrets.push({ id: 'saved', value: 'hidden', label: '站点密钥', active: false });
+            const profile = testState.profiles.find(p => p.name === 'Alpha');
+            profile.key = '';
+            profile.nativeKeyId = 'saved';
+            profile.needsKey = false;
+        });
+        await page.locator('#aqs_api_embed').getByRole('button', { name: /Alpha/ }).first().click();
+        await page.locator('#aqs_profile_list .aqs-card').filter({ hasText: 'Alpha' }).getByRole('button', { name: '编辑' }).click();
+        await wait(page, () => document.querySelector('#aqs_key_toggle')?.disabled === true);
+        assert.match(await page.locator('#aqs_form_hint').innerText(), /明文不可读/);
+        assert.equal(await page.locator('#aqs_key').inputValue(), '');
+        await page.locator('#aqs_key').fill('replacement-key');
+        assert.equal(await page.locator('#aqs_key_toggle').isDisabled(), false);
+        await activate(page.locator('#aqs_key_toggle'));
+        assert.equal(await page.locator('#aqs_key').getAttribute('type'), 'text');
+        await page.locator('#aqs_key').fill('');
+        assert.equal(await page.locator('#aqs_key').getAttribute('type'), 'password');
+        assert.equal(await page.locator('#aqs_key_toggle').isDisabled(), true);
+        await page.locator('#aqs_url').fill('https://unbound.invalid/v1');
+        await activate(page.locator('#aqs_cancel_edit'));
+        await page.locator('#aqs_profile_list .aqs-card').filter({ hasText: 'Alpha' }).getByRole('button', { name: '编辑' }).click();
+        assert.equal(await page.locator('#aqs_url').inputValue(), 'https://alpha.invalid/v1');
+        assert.equal(await page.locator('#aqs_key_toggle').isDisabled(), true);
+        await page.locator('#aqs_url').fill('https://unbound.invalid/v1');
+        await activate(page.locator('#aqs_save'));
+        await wait(page, () => testState.profiles.find(p => p.name === 'Alpha').url === 'https://unbound.invalid/v1');
+        assert.equal(await page.evaluate(() => testState.profiles.find(p => p.name === 'Alpha').nativeKeyId), '');
+    },
 };
 
 async function main() {
-    const rounds = Number(process.env.AQS_ROUNDS || 180);
+    const roundsEnv = process.env.AQS_ROUNDS;
     const selected = process.env.AQS_SCENARIO;
     const browser = await chromium.launch({ args: ['--no-sandbox', '--disable-dev-shm-usage'] });
     const devices = [
-        { name: 'Pad 5 portrait', size: { width: 800, height: 1280 }, touch: true, scale: 2 },
-        { name: 'Pad 5 landscape', size: { width: 1280, height: 800 }, touch: true, scale: 2 },
         { name: 'Pad 5 portrait', size: { width: 800, height: 1280 }, touch: true, scale: 2 },
         { name: 'Pad 5 landscape', size: { width: 1280, height: 800 }, touch: true, scale: 2 },
         { name: 'Android phone', size: { width: 390, height: 844 }, touch: true, scale: 2 },
@@ -426,13 +692,15 @@ async function main() {
         { name: 'OLED', text: 'rgb(234, 237, 242)', background: 'rgb(0, 0, 0)', accent: '#99cfaf' },
     ];
     const entries = Object.entries(scenarios).filter(([name]) => !selected || selected === name);
-    const totals = {};
+    if (!entries.length) throw new Error('No regression scenarios match AQS_SCENARIO=' + selected);
+    const matrix = entries.flatMap(([name, scenario]) => themes.flatMap(theme => devices.map(device => ({ name, scenario, theme, device }))));
+    const requestedRounds = roundsEnv == null ? matrix.length : Math.max(1, Math.floor(Number(roundsEnv) || matrix.length));
+    const cases = matrix.slice(0, Math.min(requestedRounds, matrix.length));
+    const totals = { scenarios: {}, devices: {}, themes: {}, total: cases.length };
     try {
-        for (let i = 0; i < rounds; i++) {
-            const [name, scenario] = entries[Math.floor(i / devices.length) % entries.length];
-            const device = devices[i % devices.length];
+        for (let i = 0; i < cases.length; i++) {
+            const { name, scenario, theme, device } = cases[i];
             const size = device.size;
-            const theme = themes[Math.floor(i / (devices.length * entries.length)) % themes.length];
             const context = await browser.newContext({ viewport: size, hasTouch: device.touch, isMobile: device.touch, deviceScaleFactor: device.scale });
             const errors = [];
             try {
@@ -450,16 +718,17 @@ async function main() {
                     document.documentElement.style.setProperty('--SmartThemeFastUIBGColor', background);
                     document.documentElement.style.setProperty('--SmartThemeQuoteColor', accent);
                 }, theme);
-                assert.equal(await page.locator('#aqs_api_embed .aqs-qp-item').first().evaluate(el => getComputedStyle(el).color), theme.text);
+                const themeColor = await page.locator('#aqs_api_embed .aqs-qp-item').first().evaluate(el => getComputedStyle(el).color);
+                assert.equal(themeColor, theme.text);
                 const alternate = device.touch ? { width: size.height, height: size.width } : { width: 1024, height: 768 };
                 await scenario(page, size, alternate, device.touch);
-                totals[theme.name] = (totals[theme.name] || 0) + 1;
-                totals[device.name] = (totals[device.name] || 0) + 1;
                 assert.deepEqual(errors, []);
-                totals[name] = (totals[name] || 0) + 1;
-                if ((i + 1) % 12 === 0 || i + 1 === rounds) console.log(`PASS ${i + 1}/${rounds}`);
+                totals.themes[theme.name] = (totals.themes[theme.name] || 0) + 1;
+                totals.devices[device.name] = (totals.devices[device.name] || 0) + 1;
+                totals.scenarios[name] = (totals.scenarios[name] || 0) + 1;
+                if ((i + 1) % 12 === 0 || i + 1 === cases.length) console.log(`PASS ${i + 1}/${cases.length}`);
             } catch (error) {
-                console.error(`FAIL ${i + 1}/${rounds}: ${name} ${size.width}×${size.height}`);
+                console.error(`FAIL ${i + 1}/${cases.length}: ${name} ${theme.name} ${device.name} ${size.width}×${size.height}`);
                 throw error;
             } finally { await context.close(); }
         }

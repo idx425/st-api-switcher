@@ -9,7 +9,7 @@
 
     const MODULE = 'st_api_switcher';
     const EXT_NAME = 'st-api-switcher';
-    const VERSION = '4.2.0';
+    const VERSION = '4.2.1';
     const REPO_PATH = 'idx425/st-api-switcher';
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -123,6 +123,7 @@
 
         /* ---------------- 工具 ---------------- */
         const normUrl = (u) => String(u || '').trim().replace(/\/+$/, '');
+        const normalizeApiBaseUrl = (u) => normUrl(u).replace(/\/(?:chat\/completions|responses|messages|models(?:\/[^/]+:generateContent)?)$/i, '');
         function validApiUrl(value) {
             try {
                 const url = new URL(value);
@@ -143,9 +144,9 @@
                 : host?.chatCompletionSettings?.chat_completion_source === 'custom';
             const api = $('#main_api').val() ?? host?.mainApi;
             return api === 'openai' && custom
-                ? normUrl($('#custom_api_url_text').val() ?? host?.chatCompletionSettings?.custom_url) : '';
+                ? normalizeApiBaseUrl($('#custom_api_url_text').val() ?? host?.chatCompletionSettings?.custom_url) : '';
         };
-        const sameConnection = (a, b) => normUrl(a.url) === normUrl(b.url)
+        const sameConnection = (a, b) => normalizeApiBaseUrl(a.url) === normalizeApiBaseUrl(b.url)
             && String(a.key || '') === String(b.key || '')
             && String(a.nativeKeyId || '') === String(b.nativeKeyId || '')
             && formatInfo(a.apiFormat).value === formatInfo(b.apiFormat).value;
@@ -250,6 +251,30 @@
                 .map(({ id, label, active }) => ({ id, label, active }));
         }
 
+        let suppressNativeRotationSync = 0;
+        async function activateNativeSecret(id) {
+            if (!TT || !id) throw new Error('缺少 TT 密钥 ID');
+            suppressNativeRotationSync++;
+            try {
+                let secretApi;
+                try { secretApi = await import('/scripts/secrets.js'); } catch { /* Older TT builds may not expose the module. */ }
+                if (typeof secretApi?.rotateSecret === 'function') {
+                    await secretApi.rotateSecret(SECRET_KEY_CUSTOM, id);
+                } else {
+                    await secretRequest('rotate', { id });
+                    if (typeof secretApi?.readSecretState === 'function') await secretApi.readSecretState();
+                    $('#main_api').trigger('change');
+                    await ctx.eventSource?.emit?.(ctx.eventTypes?.SECRET_ROTATED || 'secret_rotated', SECRET_KEY_CUSTOM);
+                }
+                const entries = await readCustomSecrets();
+                if (!entries.some(entry => entry.id === id && entry.active)) {
+                    throw new Error('TT 未能激活所选密钥，请重新选择后再试');
+                }
+            } finally {
+                suppressNativeRotationSync--;
+            }
+        }
+
         function isPluginSecret(item) {
             // A label is user editable; only IDs recorded by this extension belong to its temporary slots.
             return Boolean(item?.id && settings.secretIds.includes(String(item.id)));
@@ -285,7 +310,7 @@
 
         let applyBusyToastAt = 0;
         async function applyProfile(p, modelOverride) {
-            if (applyBusy) {
+            if (applyBusy || bindingBusy) {
                 if (Date.now() - applyBusyToastAt > 1200) {
                     applyBusyToastAt = Date.now();
                     toastr.info('正在切换，请稍候…', 'API 快切');
@@ -323,11 +348,7 @@
                         const entries = await readCustomSecrets();
                         const bound = entries.find(item => item.id === p.nativeKeyId);
                         if (!bound) throw new Error('已绑定的 TT 密钥不存在，请重新绑定或编辑站点填写 Key');
-                        if (!bound.active) {
-                            await secretRequest('rotate', { id: bound.id });
-                            const confirmed = (await readCustomSecrets()).some(item => item.id === bound.id && item.active);
-                            if (!confirmed) throw new Error('TT 未启用该站点绑定的密钥，已停止切换');
-                        }
+                        if (!bound.active) await activateNativeSecret(bound.id);
                     } else await writeKey(key);
                     const fields = getControls();
                     if (!ready(fields)) throw new Error('切换期间连接面板发生变化，请重试');
@@ -1039,6 +1060,7 @@
         }
 
         function setGroupState(pick, typing, typedVal) {
+            formRevision++;
             groupPick = pick || '';
             groupTyping = !!typing;
             const input = $('#aqs_group');
@@ -1227,7 +1249,7 @@
         /* ---------------- 表单 ---------------- */
         function refreshFormKeyState() {
             const field = $('#aqs_key');
-            const profile = settings.profiles.find((p) => p.id === editingId && normUrl(p.url) === formUrl());
+            const profile = settings.profiles.find((p) => p.id === editingId && normalizeApiBaseUrl(p.url) === formUrl());
             const bound = Boolean(profile?.nativeKeyId && !String(field.val() || '').trim());
             if (bound) field.attr('type', 'password');
             field.attr('placeholder', bound ? 'TT 已绑定密钥（明文不可读）' : '输入站点密钥');
@@ -1239,6 +1261,7 @@
         }
 
         function startEdit(p) {
+            formRevision++;
             editingId = p.id;
             $('#aqs_name').val(p.name);
             $('#aqs_url').val(p.url);
@@ -1257,6 +1280,7 @@
         }
 
         function resetForm() {
+            formRevision++;
             editingId = null;
             $('#aqs_name, #aqs_url, #aqs_key, #aqs_model').val('');
             $('#aqs_key').attr('type', 'password').attr('placeholder', '输入站点密钥');
@@ -1270,10 +1294,46 @@
         }
 
         function formUrl() {
-            return normUrl($('#aqs_url').val()).replace(/\/(?:chat\/completions|responses|messages|models(?:\/[^/]+:generateContent)?)$/i, '');
+            return normalizeApiBaseUrl($('#aqs_url').val());
+        }
+
+        function captureNativeBindingDraft(snap) {
+            const name = String($('#aqs_name').val() || '').trim();
+            const url = formUrl();
+            const key = String($('#aqs_key').val() || '').trim();
+            const models = splitModelValues($('#aqs_model').val());
+            const group = currentGroupValue();
+            const hasDraft = Boolean(editingId || name || url || key || models.length || group);
+            const apiFormat = formatInfo(snap.apiFormat).value;
+            const matching = settings.profiles.filter(p => normalizeApiBaseUrl(p.url) === snap.url
+                && formatInfo(p.apiFormat).value === apiFormat);
+            if (!hasDraft) {
+                if (matching.length > 1) return { error: '当前地址有多个站点，请先在列表中打开要绑定的那一个。' };
+                return { profileId: matching[0]?.id || '', draft: null };
+            }
+            if (url !== snap.url || formatInfo($('#aqs_api_format').val()).value !== apiFormat) {
+                return { error: '表单中的地址或接口格式与 TT 当前连接不一致，请先保存/取消后再绑定。' };
+            }
+            const editing = editingId ? settings.profiles.find(p => p.id === editingId) : null;
+            if (editingId && !editing) return { error: '正在编辑的站点已不存在，请重新打开后再绑定。' };
+            const duplicate = name ? settings.profiles.find(p => p.name === name && p.id !== editingId) : null;
+            if (duplicate) return { error: '已有同名站点，请打开该站点编辑，或为新站点改名。' };
+            if (!editing && !name && matching.length > 1) return { error: '当前地址有多个站点，请先打开要绑定的站点，或为新站点命名。' };
+            const target = editing || (!name && matching.length === 1 ? matching[0] : null);
+            const selectedModels = !editing && !models.length && target ? profileModels(target) : models;
+            return {
+                profileId: target?.id || '',
+                draft: {
+                    name: name || target?.name || uniqueProfileName(profileNameFromUrl(snap.url)),
+                    model: selectedModels[0] || '',
+                    models: selectedModels,
+                    group: !editing && !group ? target?.group || '' : group,
+                },
+            };
         }
 
         async function onSave(useNow = false) {
+            if (bindingBusy) { describeNativeSync('正在绑定密钥，请稍候再保存。'); return; }
             if (applyBusy) return;
             const url = formUrl();
             const name = String($('#aqs_name').val() || '').trim()
@@ -1292,9 +1352,10 @@
             let saved;
             const edits = { name, url, key, model, models, group, apiFormat };
             const update = (profile) => {
-                const sameUrl = normUrl(profile.url) === url;
+                const sameUrl = normalizeApiBaseUrl(profile.url) === url;
+                const hadCredential = Boolean(profile.key || profile.nativeKeyId);
                 const nativeKeyId = !key && sameUrl ? profile.nativeKeyId || '' : '';
-                const needsKey = !key && !nativeKeyId && sameUrl && profile.needsKey === true;
+                const needsKey = !key && !nativeKeyId && (profile.needsKey === true || (!sameUrl && hadCredential));
                 const next = { ...edits, nativeKeyId };
                 if (!sameConnection(profile, next)) invalidateProfileCheck(profile);
                 return Object.assign(profile, next, { needsKey });
@@ -1877,32 +1938,19 @@
             return true;
         }
 
-        function findExtensionsMenu() {
-            const candidates = [
-                '#extensionsMenu',
-                '#extensions_menu',
-                '.extensions_menu',
-                '#rm_button_panel_extensions_menu',
-                '#extensionsMenuButton + div',
-                '[id*="extensionsMenu"]',
-            ];
-            for (const sel of candidates) {
-                const $m = $(sel).first();
-                if ($m.length) return $m;
-            }
-            // 兜底：找含 extension_container 的菜单
-            const $c = $('.extension_container').first().parent();
-            if ($c.length) return $c;
-            return $();
-        }
+        const wandMenuSelector = '#extensionsMenu, #extensions_menu, .extensions_menu, #rm_button_panel_extensions_menu';
+        let wandButton;
 
         function injectWand() {
-            const menu = findExtensionsMenu();
-            if (!menu.length) return false;
-            const existing = $('#aqs_wand_btn');
-            // 菜单重建后按钮可能悬空：移回菜单即可，勿重复创建
-            if (existing.length) {
-                if (!menu[0].contains(existing[0])) menu.append(existing);
+            const host = wandButton?.parentElement;
+            const canonical = document.getElementById('extensionsMenu');
+            // A second matching menu can appear during layout changes. Keep the live host unless
+            // it was provisional and TT's real menu has finished mounting.
+            if (host?.isConnected && host.matches(wandMenuSelector) && (!canonical || host.id === 'extensionsMenu')) return true;
+            const menu = canonical || document.querySelector(wandMenuSelector);
+            if (!menu) return false;
+            if (wandButton) {
+                menu.append(wandButton);
                 return true;
             }
 
@@ -1933,7 +1981,8 @@
             });
 
             // 与其他扩展一致：直接 append 到 #extensionsMenu
-            menu.append(btn);
+            wandButton = btn[0];
+            menu.append(wandButton);
             return true;
         }
 
@@ -2031,35 +2080,41 @@
 
         const matchesNativeSnapshot = (snap) => currentUrl() === snap.url && currentFormat() === formatInfo(snap.apiFormat).value;
 
-        async function syncNativeProfile(snap, serial, { bindId, explicit = false } = {}) {
-            const current = () => syncSerial === serial && (explicit || settings.autoSyncNative) && !applyBusy && matchesNativeSnapshot(snap);
+        async function syncNativeProfile(snap, serial, { bindId, binding, preferActiveSecret = false } = {}) {
+            const current = () => syncSerial === serial && !applyBusy && (binding || (!bindingBusy && settings.autoSyncNative)) && matchesNativeSnapshot(snap);
             if (!current()) return;
-            const matches = settings.profiles.filter(p => normUrl(p.url) === snap.url && formatInfo(p.apiFormat).value === formatInfo(snap.apiFormat).value);
+            const matches = settings.profiles.filter(p => normalizeApiBaseUrl(p.url) === snap.url && formatInfo(p.apiFormat).value === formatInfo(snap.apiFormat).value);
             const exact = matches.find(p => (snap.key && p.key === snap.key) || (bindId && p.nativeKeyId === bindId));
-            const hit = exact || (matches.length === 1 ? matches[0] : null);
-            if (!hit && matches.length > 1) {
-                describeNativeSync('同一地址有多个站点，未覆盖。请在扩展中手动编辑。');
+            const hit = binding ? settings.profiles.find(p => p.id === binding.profileId) : exact || (matches.length === 1 ? matches[0] : null);
+            if (!binding && !hit && matches.length > 1) {
+                describeNativeSync('同一地址有多个站点，请先在列表中打开要绑定的那一个。');
                 return;
             }
             let entries;
-            if (!snap.key && !bindId) {
+            if (TT && !binding && (!snap.key || preferActiveSecret)) {
                 try { entries = await readCustomSecrets(); } catch { /* unknown: do not guess */ }
             }
             if (!current()) return;
-            const nativeKeyId = bindId || (!snap.key ? hit?.nativeKeyId : '') || '';
-            const key = bindId ? '' : snap.key || hit?.key || '';
-            const needsKey = !key && !nativeKeyId && (hit?.needsKey || !entries || entries.some(item => item.active));
-            const profile = hit || { id: uid(), url: snap.url, name: uniqueProfileName(profileNameFromUrl(snap.url)), group: '', model: '', models: [] };
-            const credentials = { url: snap.url, key, nativeKeyId, apiFormat: formatInfo(snap.apiFormat).value };
+            const activeNative = entries?.find(item => item.active && item.id && !isPluginSecret(item));
+            const retainedId = hit?.nativeKeyId && (entries === undefined || entries.some(item => item.id === hit.nativeKeyId))
+                ? hit.nativeKeyId : '';
+            const lostBinding = Boolean(hit?.nativeKeyId && !retainedId);
+            const nativeKeyId = bindId || ((preferActiveSecret || !snap.key) ? activeNative?.id || retainedId : '') || '';
+            const key = nativeKeyId || bindId ? '' : snap.key || hit?.key || '';
+            const needsKey = !key && !nativeKeyId && (hit?.needsKey || lostBinding || !entries || entries.some(item => item.active));
+            const draft = binding?.draft;
+            const profile = hit || { id: uid(), name: draft?.name || uniqueProfileName(profileNameFromUrl(snap.url)), group: '', model: '', models: [] };
+            const credentials = { ...(draft || {}), url: snap.url, key, nativeKeyId, apiFormat: formatInfo(snap.apiFormat).value };
             if (hit && !sameConnection(profile, credentials)) invalidateProfileCheck(profile);
             Object.assign(profile, credentials, { needsKey: Boolean(needsKey) });
             if (!hit) settings.profiles.push(profile);
             activeProfileId = profile.id;
             rememberRecent(profile);
             renderAll();
-            // Save credentials separately; failing to enumerate models must not lose a confirmed key.
-            let suffix = snap.model ? '未验证模型，未自动添加。' : '未选择模型。';
-            if (snap.model && !needsKey) {
+            if (draft) startEdit(profile);
+            // A form saves the user's model choices as entered. Only infer a model for native sync.
+            let suffix = draft ? '' : snap.model ? '未验证模型，未自动添加。' : '未选择模型。';
+            if (!draft && snap.model && !needsKey) {
                 const controller = syncAbort = new AbortController();
                 describeNativeSync('已保存配置，正在核对本站模型…');
                 try {
@@ -2087,6 +2142,17 @@
 
         let bindingTarget;
         let bindingRevision = 0;
+        let formRevision = 0;
+        let bindingBusy = false;
+
+        function matchesBindingDraft(binding) {
+            const current = captureNativeBindingDraft(binding.snap);
+            return binding.formRevision === formRevision && !current.error
+                && !String($('#api_key_custom').val() || '').trim()
+                && binding.profileId === current.profileId
+                && JSON.stringify(binding.draft) === JSON.stringify(current.draft);
+        }
+
         function closeNativeKeyPicker() {
             bindingRevision++;
             bindingTarget = undefined;
@@ -2095,11 +2161,14 @@
         }
 
         async function showNativeKeyPicker() {
-            if (!TT || applyBusy) return;
+            if (!TT || applyBusy || bindingBusy) return;
             closeNativeKeyPicker();
             const revision = bindingRevision;
             const snap = captureNativeApiSnapshot();
             if (!snap) { describeNativeSync('请先在插头面板设置一个自定义 API 地址。'); return; }
+            const draftTarget = captureNativeBindingDraft(snap);
+            if (draftTarget.error) { describeNativeSync(draftTarget.error); return; }
+            const binding = { snap, ...draftTarget, formRevision };
             if (snap.key) { describeNativeSync('原生面板还有未保存的 Key，请先点「连接」保存。'); return; }
             let entries;
             try { entries = await readCustomSecrets(); }
@@ -2115,7 +2184,11 @@
                     : '没有可绑定的 TT 原生密钥。请在原生面板保存本站的密钥，或在站点卡片中填写。');
                 return;
             }
-            bindingTarget = snap;
+            if (!matchesBindingDraft(binding)) {
+                describeNativeSync('表单已变化，请重新打开绑定。');
+                return;
+            }
+            bindingTarget = binding;
             const select = $('#aqs_native_key_select').prop('disabled', false);
             select.append($('<option>').val('').text('选择这个站点的密钥…'));
             for (const [index, entry] of options.entries()) {
@@ -2125,49 +2198,104 @@
             $('#aqs_native_key_target').text(snap.url);
             $('#aqs_native_key_apply').prop('disabled', true);
             $('#aqs_native_key_picker').prop('hidden', false);
-            describeNativeSync('请核对地址，并选择属于该站点的密钥。');
+            const targetName = binding.draft?.name || settings.profiles.find(p => p.id === binding.profileId)?.name;
+            describeNativeSync(targetName ? '将绑定到「' + targetName + '」，请核对地址和密钥。' : '请核对地址，并选择属于该站点的密钥。');
         }
 
         async function applyNativeKeyBinding() {
-            const snap = bindingTarget;
+            const binding = bindingTarget;
+            const snap = binding?.snap;
             const id = $('#aqs_native_key_select').val();
-            if (!snap || !id || applyBusy) return;
+            if (!snap || !id || applyBusy || bindingBusy) return;
             const revision = bindingRevision;
             $('#aqs_native_key_apply, #aqs_native_key_select').prop('disabled', true);
+            bindingBusy = true;
             try {
                 const entry = (await readCustomSecrets()).find(item => item.id === id && !isPluginSecret(item));
                 if (revision !== bindingRevision) return;
-                if (applyBusy || !matchesNativeSnapshot(snap) || !entry) {
+                if (!matchesNativeSnapshot(snap) || !entry) {
                     closeNativeKeyPicker();
                     describeNativeSync('连接地址或密钥已变化，请重新打开绑定。');
                     return;
                 }
+                if (!matchesBindingDraft(binding)) {
+                    closeNativeKeyPicker();
+                    describeNativeSync('表单已变化，请重新打开绑定。');
+                    return;
+                }
+                await activateNativeSecret(id);
+                if (revision !== bindingRevision || !matchesNativeSnapshot(snap) || !matchesBindingDraft(binding)) {
+                    closeNativeKeyPicker();
+                    describeNativeSync('密钥已激活，站点未绑定。请核对连接和表单后重新绑定。');
+                    return;
+                }
                 closeNativeKeyPicker();
                 invalidateNativeSync();
-                await syncNativeProfile(snap, syncSerial, { bindId: id, explicit: true });
-            } catch {
-                if (revision === bindingRevision || bindingTarget === undefined) {
-                    closeNativeKeyPicker();
-                    describeNativeSync('无法完成绑定，请重新读取 TT 密钥列表。');
+                // The explicit binding is saved synchronously before any optional model lookup.
+                const serial = syncSerial;
+                void syncNativeProfile(snap, serial, { bindId: id, binding }).catch(() => {
+                    if (serial === syncSerial) describeNativeSync('密钥已激活，未能同步站点，请重新绑定。');
+                });
+            } catch (error) {
+                if (revision === bindingRevision) {
+                    $('#aqs_native_key_apply, #aqs_native_key_select').prop('disabled', false);
+                    describeNativeSync('绑定失败：' + String(error?.message || error));
                 }
+            } finally {
+                bindingBusy = false;
             }
         }
 
         function bindNativeSync() {
-            const { SECRET_WRITTEN } = ctx.eventTypes || {};
-            const observesWrites = Boolean(SECRET_WRITTEN && ctx.eventSource?.on);
+            const eventTypes = ctx.eventTypes || {};
+            const observesWrites = Boolean(eventTypes.SECRET_WRITTEN && ctx.eventSource?.on);
             let pending = null;
             let expiry;
             const clear = () => { clearTimeout(expiry); pending = null; };
-            const run = (snap, serial) => syncNativeProfile(snap, serial).catch(() => describeNativeSync('未能同步这次连接，请重试。'));
-            if (observesWrites) ctx.eventSource.on(SECRET_WRITTEN, (key) => {
-                if (key !== SECRET_KEY_CUSTOM || !pending) return;
-                const { snap, serial } = pending;
+            const run = (snap, serial, options) => syncNativeProfile(snap, serial, options).catch(() => describeNativeSync('未能同步这次连接，请重试。'));
+            const syncActiveNativeSecret = async (key) => {
+                if (key !== SECRET_KEY_CUSTOM || suppressNativeRotationSync || !settings.autoSyncNative || applyBusy || bindingBusy) return;
                 clear();
-                void run(snap, serial);
+                invalidateNativeSync();
+                const serial = syncSerial;
+                queueMicrotask(async () => {
+                    const snap = captureNativeApiSnapshot();
+                    if (!snap || !snap.url || serial !== syncSerial || applyBusy) return;
+                    try {
+                        const entries = await readCustomSecrets();
+                        if (serial !== syncSerial || applyBusy || !matchesNativeSnapshot(snap)) return;
+                        const active = entries.find(entry => entry.active && entry.id && !isPluginSecret(entry));
+                        if (active) await run(snap, serial, { bindId: active.id });
+                    } catch { describeNativeSync('读取 TT 当前密钥失败，未同步站点；可重新选择密钥。'); }
+                });
+            };
+            if (observesWrites) ctx.eventSource.on(eventTypes.SECRET_WRITTEN, (key) => {
+                if (key !== SECRET_KEY_CUSTOM) return;
+                if (pending) {
+                    const { snap, serial } = pending;
+                    clear();
+                    void run(snap, serial, { preferActiveSecret: true });
+                } else void syncActiveNativeSecret(key);
+            });
+            ctx.eventSource?.on?.(eventTypes.SECRET_ROTATED || 'secret_rotated', syncActiveNativeSecret);
+            ctx.eventSource?.on?.(eventTypes.SECRET_DELETED || 'secret_deleted', async (key) => {
+                if (key !== SECRET_KEY_CUSTOM || !settings.autoSyncNative || applyBusy) return;
+                try {
+                    const entries = await readCustomSecrets();
+                    const available = new Set(entries.map(entry => entry.id).filter(Boolean));
+                    let changed = false;
+                    for (const profile of settings.profiles) {
+                        if (profile.nativeKeyId && !available.has(profile.nativeKeyId)) {
+                            profile.nativeKeyId = '';
+                            profile.needsKey = true;
+                            changed = true;
+                        }
+                    }
+                    if (changed) { save(); renderAll(); }
+                } catch { describeNativeSync('未能确认删除的密钥状态，请检查站点绑定。'); }
             });
             document.addEventListener('click', (event) => {
-                if (!event.target.closest?.('#api_button_openai') || applyBusy || !settings.autoSyncNative) return;
+                if (!event.target.closest?.('#api_button_openai') || applyBusy || bindingBusy || !settings.autoSyncNative) return;
                 const snap = captureNativeApiSnapshot();
                 clear();
                 invalidateNativeSync();
@@ -2183,7 +2311,7 @@
                 } else queueMicrotask(() => run(snap, serial));
             }, true);
             const invalidate = () => { clear(); invalidateNativeSync(); closeNativeKeyPicker(); };
-            ctx.eventSource?.on?.(ctx.eventTypes?.CHATCOMPLETION_SOURCE_CHANGED || 'chatcompletion_source_changed', invalidate);
+            ctx.eventSource?.on?.(eventTypes.CHATCOMPLETION_SOURCE_CHANGED || 'chatcompletion_source_changed', invalidate);
             $(document).on('input.aqsSync', '#custom_api_url_text', invalidate);
             $(document).on('change.aqsSync', '#chat_completion_source', invalidate);
             $(document).on('input.aqsSync', '#api_key_custom', function () { if (this.value) invalidate(); });
@@ -2338,6 +2466,7 @@
             $('#aqs_native_key_cancel').on('click.aqs', () => { closeNativeKeyPicker(); describeNativeSync(''); });
             $('#aqs_save').on('click.aqs', () => onSave(false));
             $('#aqs_save_use').on('click.aqs', () => onSave(true));
+            $('#aqs_name, #aqs_url, #aqs_key, #aqs_model, #aqs_group, #aqs_api_format').on('input.aqs change.aqs', () => { formRevision++; });
             $('#aqs_url, #aqs_key').on('input.aqs', refreshFormKeyState);
 
             $('#aqs_key_toggle').on('click.aqs', function () {
@@ -2354,6 +2483,7 @@
                     $('#aqs_form_hint').text('未覆盖不同地址的草稿；请先清空地址再填入。');
                     return;
                 }
+                formRevision++;
                 $('#aqs_url').val(snap.url);
                 $('#aqs_api_format').val(snap.apiFormat);
                 if (!$('#aqs_model').val() && snap.model) $('#aqs_model').val(snap.model);

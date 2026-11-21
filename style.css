@@ -16,6 +16,15 @@
     line-height: 1.4;
 }
 
+/* The mobile drawer can be narrower than its viewport. Keep card rows within its content box. */
+.aqs-settings .inline-drawer,
+.aqs-settings .inline-drawer-content,
+.aqs-settings #aqs_profile_list {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+}
 .aqs-settings .inline-drawer-content { padding: 12px; }
 .aqs-sys-bar, .aqs-card-head, .aqs-card-meta, .aqs-card-btns,
 .aqs-form-btns, .aqs-io-btns, #aqs_group_picker, .aqs-search-bar,
@@ -45,14 +54,37 @@
 .aqs-card-url, .aqs-chip, .aqs-note, .aqs-qp-model, .aqs-qp-group, .aqs-group-count,
 .aqs-sys-ver, .aqs-api-embed-ver, .aqs-pager-info, .aqs-empty, .aqs-modal-loading,
 .aqs-field-label { color: var(--aqs-muted, inherit); font-size: .86em; }
-.aqs-card-url, .aqs-card-name, .aqs-group-name, .aqs-chip, .aqs-note { overflow-wrap: anywhere; }
+.aqs-card-url, .aqs-card-name, .aqs-group-name, .aqs-chip, .aqs-note {
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+.aqs-settings .aqs-card-head > :is(.aqs-badge, .aqs-favorite) { flex: none; }
+#aqs_profile_list .aqs-card-btns > .aqs-btn { flex: none; min-width: 24px; }
+.aqs-settings .aqs-check-row { flex-wrap: wrap; }
+.aqs-settings .aqs-check-row > span { flex: 1 1 12rem; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+.aqs-settings .aqs-chip { box-sizing: border-box; min-width: 0; max-width: 100%; }
 .aqs-chip, .aqs-badge { border: 1px solid var(--aqs-border); padding: 2px 7px; border-radius: 6px; }
 .aqs-badge { font-size: .75em; background: var(--aqs-selected); }
 .aqs-settings .aqs-field-label, .aqs-settings .aqs-check-row, .aqs-settings .aqs-form-btns,
 .aqs-settings .aqs-io-btns, .aqs-settings .aqs-note { margin-top: 10px; }
 .aqs-note { display: block; }
 .aqs-settings .aqs-card-models, .aqs-qp-model-list { overflow: auto; max-height: 12rem; margin-block: 4px; }
-.aqs-settings .aqs-card-models { display: grid; gap: 3px; }
+.aqs-settings .aqs-card-models {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+    min-width: 0;
+    gap: 3px;
+}
+.aqs-settings .aqs-card-models > .aqs-model-choice {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    text-align: start;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
 .aqs-model-row { align-items: flex-start; margin-block: 4px; }
 .aqs-model-row textarea { flex: 1 1 12rem; }
 .aqs-model-row .aqs-btn { flex-shrink: 0; }
